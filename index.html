@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="mopai">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>墨排 · Markdown 公众号排版工作台</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+  <style>
+    :root, [data-theme="mopai"] {
+      color-scheme: light;
+      --color-base-100: oklch(99% 0.008 90);
+      --color-base-200: oklch(96.5% 0.012 88);
+      --color-base-300: oklch(91% 0.018 84);
+      --color-base-content: oklch(22% 0.018 68);
+      --color-primary: oklch(27% 0.018 68);
+      --color-primary-content: oklch(98% 0.008 90);
+      --color-secondary: oklch(72% 0.12 78);
+      --color-secondary-content: oklch(22% 0.018 68);
+      --color-accent: oklch(82% 0.14 87);
+      --color-accent-content: oklch(25% 0.03 70);
+      --color-neutral: oklch(47% 0.018 68);
+      --color-neutral-content: oklch(98% 0.008 90);
+      --color-info: oklch(65% 0.14 244);
+      --color-info-content: oklch(98% 0.008 90);
+      --color-success: oklch(63% 0.14 156);
+      --color-success-content: oklch(98% 0.008 90);
+      --color-warning: oklch(78% 0.15 79);
+      --color-warning-content: oklch(25% 0.03 70);
+      --color-error: oklch(60% 0.19 28);
+      --color-error-content: oklch(98% 0.008 90);
+      --radius-selector: 1rem;
+      --radius-field: 0.65rem;
+      --radius-box: 1rem;
+      --size-selector: 0.25rem;
+      --size-field: 0.25rem;
+      --border: 1px;
+      --depth: 1;
+      --noise: 0;
+    }
+
+    :root {
+      --app-ink: #23211d;
+      --app-muted: #817b70;
+      --app-line: #e8e1d5;
+      --app-paper: #fffefb;
+      --app-stage: #f0ebe1;
+      --app-marker: #f6d96b;
+      --app-marker-soft: #fff5c7;
+      --app-shadow: 0 18px 50px rgba(67, 54, 31, .08);
+      --ui-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono-font: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      overflow: hidden;
+      color: var(--app-ink);
+      font-family: var(--ui-font);
+      background-color: #f8f4eb;
+      background-image: linear-gradient(rgba(35,33,29,.028) 1px, transparent 1px), linear-gradient(90deg, rgba(35,33,29,.028) 1px, transparent 1px);
+      background-size: 48px 48px;
+    }
+    button, input, select, textarea { font-family: inherit; }
+    button:active { transform: translateY(1px); }
+    .ph { font-size: 16px; line-height: 1; }
+
+    .app-shell { height: 100dvh; display: flex; flex-direction: column; min-height: 0; }
+    .topbar {
+      min-height: 68px; padding: 10px 18px; display: flex; align-items: center; gap: 14px;
+      border-bottom: 1px solid rgba(232,225,213,.9); background: rgba(255,254,251,.88);
+      backdrop-filter: blur(16px); position: relative; z-index: 20;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 166px; }
+    .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 10px; background: var(--app-ink); color: #fffdf8; font: 800 17px/1 var(--mono-font); transform: rotate(-3deg); }
+    .brand-name { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -.7px; }
+    .brand-kicker { margin-top: 1px; color: var(--app-muted); font: 600 9px/1.2 var(--mono-font); letter-spacing: .12em; text-transform: uppercase; }
+    .filename-wrap { flex: 1; min-width: 140px; max-width: 390px; position: relative; }
+    .filename-wrap .ph { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--app-muted); pointer-events: none; }
+    #filename { width: 100%; height: 38px; padding-left: 34px; border-color: transparent; background: transparent; font-size: 13px; font-weight: 650; }
+    #filename:hover, #filename:focus { border-color: var(--app-line); background: #fff; outline: none; }
+    .top-actions { margin-left: auto; display: flex; align-items: center; gap: 7px; }
+    .top-actions .btn { font-weight: 700; }
+    .copy-btn { white-space: nowrap; box-shadow: 0 5px 16px rgba(35,33,29,.16); }
+
+    .commandbar, .componentbar {
+      padding: 7px 18px; display: flex; align-items: center; gap: 8px; overflow-x: auto;
+      border-bottom: 1px solid var(--app-line); background: rgba(248,244,235,.94); position: relative; z-index: 15;
+      scrollbar-width: thin; scrollbar-color: #d8cebd transparent;
+    }
+    .commandbar { min-height: 48px; }
+    .componentbar { min-height: 46px; padding-block: 6px; background: rgba(255,253,248,.95); }
+    .tool-strip, .top-tools { display: flex; align-items: center; gap: 4px; min-width: max-content; flex: none; }
+    .tool-btn { min-height: 30px; height: 30px; padding: 0 8px; border-radius: 8px; color: #625d54; }
+    .tool-btn:hover { background: #fff; color: var(--app-ink); }
+    .toolbar-label { flex: none; color: var(--app-muted); font: 750 9px/1 var(--mono-font); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+    .commandbar button.tool, .componentbar button.tool {
+      min-height: 29px; padding: 4px 9px; border: 1px solid var(--app-line); border-radius: 8px;
+      background: #fff; color: #625d54; font-size: 11px; font-weight: 680; cursor: pointer; white-space: nowrap;
+    }
+    .commandbar button.tool:hover, .componentbar button.tool:hover { border-color: #d3b849; background: var(--app-marker-soft); color: var(--app-ink); }
+    .commandbar button.tool .glyph, .componentbar button.tool .glyph { margin-right: 4px; color: var(--app-muted); font-family: var(--mono-font); }
+    .cmd-sep { width: 1px; height: 22px; background: var(--app-line); margin: 0 3px; flex: none; }
+    .theme-bar { display: flex; flex: none; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--app-line); border-radius: 12px; background: rgba(255,255,255,.62); }
+    .theme-chip { min-height: 28px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--app-muted); font-size: 11px; font-weight: 750; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .theme-chip:hover { color: var(--app-ink); background: #fff; }
+    .theme-chip.active { color: var(--app-ink); background: var(--app-marker-soft); box-shadow: inset 0 0 0 1px #e8ce68; }
+    .theme-chip .dot { width: 7px; height: 7px; border-radius: 99px; }
+    .command-spacer { flex: 1; }
+    #ai-preset { width: 105px; height: 32px; min-height: 32px; font-size: 11px; border-color: var(--app-line); }
+    .ai-btn { height: 34px; min-height: 34px; border-color: var(--app-ink); white-space: nowrap; }
+    .ai-btn:hover { background: var(--app-marker); color: var(--app-ink); }
+
+    #workspace {
+      --split: 50%; flex: 1; min-height: 0; display: grid; grid-template-columns: var(--split) 12px 1fr; padding: 12px 18px 14px;
+    }
+    #workspace.edit-only { grid-template-columns: 1fr; }
+    #workspace.preview-only { grid-template-columns: 1fr; }
+    #workspace.edit-only .preview-panel, #workspace.preview-only .editor-panel, #workspace.edit-only .split-handle, #workspace.preview-only .split-handle { display: none; }
+    .panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--app-line); border-radius: 16px; background: var(--app-paper); box-shadow: var(--app-shadow); }
+    .panel-head { height: 44px; flex: none; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--app-line); background: #fffdf8; }
+    .panel-title { display: inline-flex; align-items: center; gap: 8px; font: 750 11px/1 var(--mono-font); letter-spacing: .07em; color: #6f695f; text-transform: uppercase; }
+    .panel-no { color: var(--app-ink); font-weight: 900; }
+    .panel-meta { display: flex; align-items: center; gap: 8px; color: var(--app-muted); font-size: 11px; white-space: nowrap; }
+    .save-state { display: inline-flex; align-items: center; gap: 5px; }
+    .save-state::before { content: ""; width: 6px; height: 6px; border-radius: 99px; background: #66a47a; }
+    .editor-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #input { flex: 1; width: 100%; min-height: 0; resize: none; border: 0; outline: 0; border-radius: 0; padding: 26px 30px 60px; background: var(--app-paper); color: var(--app-ink); caret-color: #bd862a; font: 15px/1.9 var(--mono-font); tab-size: 2; }
+    #input::placeholder { color: #b5aea2; }
+
+    .split-handle { position: relative; cursor: col-resize; touch-action: none; }
+    .split-handle::after { content: ""; position: absolute; left: 50%; top: 50%; width: 3px; height: 38px; transform: translate(-50%,-50%); border-radius: 99px; background: #cfc5b5; transition: height .18s ease, background .18s ease; }
+    .split-handle:hover::after, .split-handle.dragging::after { height: 56px; background: var(--app-ink); }
+
+    .preview-stage { flex: 1; min-height: 0; overflow: auto; padding: 28px; display: flex; align-items: flex-start; justify-content: center; background: var(--app-stage); position: relative; }
+    .preview-stage::before { content: "PREVIEW"; position: absolute; right: 14px; bottom: 3px; color: rgba(35,33,29,.045); font: 900 54px/1 var(--mono-font); letter-spacing: -.08em; pointer-events: none; }
+    .phone { width: 375px; flex: none; margin: 4px 0 28px; overflow: hidden; border: 8px solid #292723; border-radius: 32px; background: #fff; box-shadow: 0 20px 44px rgba(54,45,31,.22); position: relative; z-index: 1; }
+    .phone-statusbar { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; background: #f7f7f5; color: #272727; font-size: 11px; font-weight: 700; }
+    .phone-island { width: 78px; height: 20px; border-radius: 99px; background: #20201f; }
+    .phone-navbar { height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid #ececec; background: #f7f7f5; color: #292929; }
+    .phone-navbar .title { flex: 1; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; }
+    .phone-screen { height: 620px; overflow-y: auto; background: #fff; }
+    .phone-content { padding: 16px 13px 38px; }
+    .desktop-preview .phone { width: min(677px, 100%); border: 0; border-radius: 4px; box-shadow: 0 16px 40px rgba(54,45,31,.12); }
+    .desktop-preview .phone-statusbar, .desktop-preview .phone-navbar { display: none; }
+    .desktop-preview .phone-screen { height: auto; min-height: 100%; overflow: visible; }
+    .desktop-preview .phone-content { padding: 34px 38px 70px; }
+
+    .preview-tools { display: flex; align-items: center; gap: 8px; }
+    .preview-tabs { height: 30px; padding: 2px; }
+    .preview-tabs .tab { height: 24px; min-height: 24px; padding-inline: 10px; font-size: 10px; }
+    .preview-tabs .tab-active { background: #fff; box-shadow: 0 1px 4px rgba(44,35,24,.1); }
+    .font-stepper { display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 2px 3px 2px 8px; border: 1px solid var(--app-line); border-radius: 9px; background: #fff; }
+    .font-stepper span, .font-stepper output { font-size: 10px; color: var(--app-muted); }
+    .font-stepper output { width: 32px; color: var(--app-ink); text-align: center; font-weight: 750; }
+    .font-stepper button { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; cursor: pointer; }
+    .font-stepper button:hover { background: var(--app-marker-soft); }
+    .font-stepper button:disabled { opacity: .28; cursor: not-allowed; }
+
+    #toolbar-inline, #toolbar-block { display: contents; }
+
+    .table-picker {
+      position: fixed; z-index: 75; width: 238px; padding: 13px; border: 1px solid var(--app-line);
+      border-radius: 14px; background: #fffefb; box-shadow: 0 18px 48px rgba(50,40,24,.2);
+    }
+    .table-picker[hidden] { display: none; }
+    .table-grid { display: grid; grid-template-columns: repeat(8, 22px); gap: 4px; }
+    .table-grid-cell { width: 22px; height: 22px; padding: 0; border: 1px solid #dcd4c7; border-radius: 4px; background: #fff; cursor: pointer; }
+    .table-grid-cell.active { border-color: #a57b0c; background: var(--app-marker); }
+    .table-size-label { margin-top: 10px; color: var(--app-muted); text-align: center; font-size: 11px; font-weight: 700; }
+
+    .image-tabs { margin-top: 16px; }
+    .image-panel { display: none; padding-top: 4px; }
+    .image-panel.active { display: block; }
+    .image-drop {
+      min-height: 126px; margin-top: 14px; border: 1.5px dashed #cfc4b3; border-radius: 12px;
+      display: grid; place-items: center; gap: 4px; padding: 18px; background: #faf7f0; color: var(--app-muted);
+      text-align: center; cursor: pointer;
+    }
+    .image-drop:hover, .image-drop.dragging { border-color: #a57b0c; background: var(--app-marker-soft); color: var(--app-ink); }
+    .image-drop .ph { font-size: 28px; }
+    .image-drop small { font-size: 11px; }
+    .image-preview { display: none; max-width: 100%; max-height: 220px; margin: 12px auto 0; border-radius: 10px; box-shadow: 0 8px 24px rgba(50,40,24,.12); }
+    .image-preview.show { display: block; }
+
+    .style-pop { position: fixed; z-index: 50; display: none; width: 380px; max-height: 70vh; overflow: hidden; padding: 14px 16px; border: 1px solid var(--app-line); border-radius: 14px; background: #fff; box-shadow: 0 18px 54px rgba(50,40,24,.18); pointer-events: none; }
+    .style-pop.show { display: block; }
+    .style-pop .pop-label { margin: 0 0 10px; color: var(--app-muted); font: 750 9px/1 var(--mono-font); letter-spacing: .1em; text-transform: uppercase; }
+
+    .toast-wrap { z-index: 80; transition: opacity .2s ease, transform .2s ease; opacity: 0; transform: translateY(10px); pointer-events: none; }
+    .toast-wrap.show { opacity: 1; transform: translateY(0); }
+    .toast-wrap .alert { min-width: 230px; border: 0; background: var(--app-ink); color: #fffdf8; box-shadow: 0 12px 32px rgba(35,33,29,.2); }
+
+    .signature-dialog::backdrop { background: rgba(35,33,29,.36); backdrop-filter: blur(4px); }
+    .signature-card { border: 1px solid var(--app-line); background: #fffefb; }
+    .dialog-eyebrow { color: var(--app-muted); font: 750 9px/1 var(--mono-font); letter-spacing: .12em; text-transform: uppercase; }
+    .field-label { display: grid; gap: 6px; margin-top: 14px; font-size: 12px; font-weight: 700; color: #5e594f; }
+    .field-label .input { width: 100%; background: #fff; border-color: var(--app-line); }
+
+    #btn-punct { border: 0; background: transparent; color: var(--app-muted); font-size: 11px; cursor: pointer; }
+    #btn-punct.warn { color: #96620e; font-weight: 750; }
+    #file-input { display: none; }
+
+    @media (max-width: 1180px) {
+      .brand-kicker { display: none; }
+      .brand { min-width: 110px; }
+      .theme-chip { padding-inline: 8px; }
+      .commandbar { overflow-x: auto; }
+      .command-spacer { min-width: 8px; }
+    }
+    @media (max-width: 860px) {
+      body { overflow: auto; }
+      .app-shell { height: auto; min-height: 100dvh; }
+      .topbar { flex-wrap: wrap; }
+      .filename-wrap { order: 3; flex-basis: 100%; max-width: none; }
+      .top-actions { margin-left: auto; }
+      .copy-btn { width: 38px; padding: 0; font-size: 0; }
+      .copy-btn .ph { font-size: 16px; }
+      .commandbar { position: sticky; top: 0; overflow-x: auto; }
+      #ai-preset, .ai-btn { flex: none; }
+      #workspace { grid-template-columns: 1fr; height: auto; padding: 10px; gap: 10px; }
+      .split-handle { display: none; }
+      .panel { min-height: 72dvh; }
+      .preview-panel { min-height: 80dvh; }
+      .preview-stage { padding: 20px 10px; }
+      .phone { width: min(375px, calc(100vw - 42px)); }
+      #input { padding: 22px 18px 50px; }
+      .hide-mobile { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="墨排">
+        <span class="brand-mark">墨</span>
+        <div>
+          <h1 class="brand-name">墨排</h1>
+          <div class="brand-kicker">Markdown in · WeChat out</div>
+        </div>
+      </div>
+
+      <label class="filename-wrap">
+        <i class="ph ph-file-text" aria-hidden="true"></i>
+        <input id="filename" class="input input-sm" value="未命名文章.md" aria-label="文档文件名" autocomplete="off">
+      </label>
+
+      <div class="top-actions">
+        <button id="btn-save" class="btn btn-sm btn-ghost" title="保存到浏览器（⌘/Ctrl S）"><i class="ph ph-floppy-disk"></i><span class="hide-mobile">保存</span></button>
+        <details class="dropdown dropdown-end" id="file-menu">
+          <summary class="btn btn-sm btn-ghost"><i class="ph ph-folder-open"></i><span class="hide-mobile">文件</span><i class="ph ph-caret-down"></i></summary>
+          <ul class="dropdown-content menu mt-2 w-52 rounded-box border border-base-300 bg-base-100 p-2 shadow-lg">
+            <li><button id="btn-import"><i class="ph ph-upload-simple"></i>导入 Markdown</button></li>
+            <li><button id="btn-export-md"><i class="ph ph-file-md"></i>导出 Markdown</button></li>
+            <li><button id="btn-export-html"><i class="ph ph-code"></i>导出公众号 HTML</button></li>
+            <li><button id="btn-sample"><i class="ph ph-notebook"></i>载入完整示例</button></li>
+            <li><button id="btn-clear" class="text-error"><i class="ph ph-trash"></i>清空文档</button></li>
+          </ul>
+        </details>
+        <input id="file-input" type="file" accept=".md,.markdown,.txt,text/plain">
+        <details class="dropdown dropdown-end" id="view-menu">
+          <summary class="btn btn-sm btn-ghost" title="切换编辑视图"><i class="ph ph-layout"></i><span class="hide-mobile">视图</span><i class="ph ph-caret-down hide-mobile"></i></summary>
+          <ul class="dropdown-content menu mt-2 w-36 rounded-box border border-base-300 bg-base-100 p-2 shadow-lg">
+            <li><button data-view="both"><i class="ph ph-columns"></i>双栏</button></li>
+            <li><button data-view="edit"><i class="ph ph-pencil-simple"></i>仅编辑</button></li>
+            <li><button data-view="preview"><i class="ph ph-eye"></i>仅预览</button></li>
+          </ul>
+        </details>
+        <button id="btn-copy" class="btn btn-sm btn-primary copy-btn"><i class="ph ph-copy"></i>复制到公众号</button>
+      </div>
+    </header>
+
+    <nav class="commandbar" aria-label="公众号行内样式工具栏">
+      <div class="tool-strip" role="toolbar" aria-label="编辑历史">
+        <button id="btn-undo" class="btn btn-sm btn-ghost btn-square tool-btn" title="撤销（⌘/Ctrl Z）"><i class="ph ph-arrow-counter-clockwise"></i></button>
+        <button id="btn-redo" class="btn btn-sm btn-ghost btn-square tool-btn" title="重做（⌘/Ctrl Shift Z）"><i class="ph ph-arrow-clockwise"></i></button>
+      </div>
+      <span class="cmd-sep"></span>
+      <span class="toolbar-label">行内样式</span>
+      <span id="toolbar-inline" class="top-tools"></span>
+      <div class="command-spacer"></div>
+      <div id="theme-bar" class="theme-bar" aria-label="公众号主题"></div>
+      <select id="ai-preset" class="select select-sm" title="本地 Agent CLI"></select>
+      <button id="btn-ai" class="btn btn-sm btn-outline ai-btn"><i class="ph ph-magic-wand"></i>AI 一键排版</button>
+      <button id="btn-ai-undo" class="btn btn-sm btn-ghost" style="display:none">还原 AI</button>
+    </nav>
+    <nav class="componentbar" aria-label="公众号区块组件工具栏">
+      <span class="toolbar-label">公众号组件</span>
+      <span id="toolbar-block" class="top-tools"></span>
+    </nav>
+
+    <main id="workspace">
+      <section class="panel editor-panel" aria-labelledby="editor-heading">
+        <header class="panel-head">
+          <h2 id="editor-heading" class="panel-title"><span class="panel-no">01</span> Markdown 源码</h2>
+          <div class="panel-meta">
+            <button id="btn-punct" type="button">标点 ✓</button>
+            <span id="char-count">0 字</span>
+            <span id="save-state" class="save-state">已自动保存</span>
+          </div>
+        </header>
+        <div class="editor-scroll">
+          <textarea id="input" class="textarea" spellcheck="false" placeholder="# 从标题开始写作…&#10;&#10;支持标准 Markdown，也支持公众号排版扩展语法。"></textarea>
+        </div>
+      </section>
+
+      <div class="split-handle" id="split-handle" title="拖动调整宽度" aria-hidden="true"></div>
+
+      <section class="panel preview-panel" aria-labelledby="preview-heading">
+        <header class="panel-head">
+          <h2 id="preview-heading" class="panel-title"><span class="panel-no">02</span> 公众号预览</h2>
+          <div class="preview-tools">
+            <div role="tablist" class="tabs tabs-box preview-tabs" aria-label="预览设备">
+              <button id="view-phone" role="tab" class="tab tab-active">手机</button>
+              <button id="view-article" role="tab" class="tab">文章</button>
+            </div>
+            <span class="font-stepper" role="group" aria-label="调整正文字号">
+              <span>正文</span>
+              <button id="btn-font-dec" type="button" aria-label="减小正文字号">−</button>
+              <output id="body-font-value">15px</output>
+              <button id="btn-font-inc" type="button" aria-label="增大正文字号">＋</button>
+            </span>
+            <span id="phone-time" hidden>9:41</span>
+          </div>
+        </header>
+        <div id="preview-stage" class="preview-stage">
+          <div class="phone">
+            <div class="phone-statusbar">
+              <span id="phone-time-bar">9:41</span>
+              <span class="phone-island" aria-hidden="true"></span>
+              <span>5G&nbsp; 100%</span>
+            </div>
+            <div class="phone-navbar">
+              <i class="ph ph-caret-left"></i>
+              <span class="title" id="phone-title">公众号文章</span>
+              <i class="ph ph-dots-three"></i>
+            </div>
+            <div class="phone-screen">
+              <div class="phone-content"><article id="preview"></article></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast toast-center toast-bottom toast-wrap"><div class="alert"><span>已完成</span></div></div>
+
+  <div id="table-picker" class="table-picker" hidden aria-label="选择表格尺寸">
+    <div id="table-grid" class="table-grid"></div>
+    <div id="table-size-label" class="table-size-label">移动鼠标选择表格尺寸</div>
+  </div>
+
+  <dialog id="signature-dialog" class="modal signature-dialog" aria-labelledby="signature-dialog-title">
+    <form id="signature-form" class="modal-box signature-card">
+      <p class="dialog-eyebrow">Article identity</p>
+      <h2 id="signature-dialog-title" class="mt-2 text-xl font-bold">默认签名</h2>
+      <p class="mt-2 text-sm text-base-content/60">在这里维护默认作者信息，可只保存，也可保存后立即插入当前文章。</p>
+      <label class="field-label">作者名
+        <input id="signature-name" class="input input-sm" name="signature-name" type="text" maxlength="40" required autocomplete="name" placeholder="例如：你的名字">
+      </label>
+      <label class="field-label">一句话简介
+        <input id="signature-bio" class="input input-sm" name="signature-bio" type="text" maxlength="100" placeholder="例如：一个重度 AI 使用者的真实观察">
+      </label>
+      <div class="modal-action">
+        <button id="btn-signature-cancel" class="btn btn-sm" type="button">取消</button>
+        <button id="btn-signature-save" class="btn btn-sm" type="button">仅保存默认</button>
+        <button class="btn btn-sm btn-primary" type="submit">保存并插入</button>
+      </div>
+    </form>
+    <form method="dialog" class="modal-backdrop"><button aria-label="关闭">close</button></form>
+  </dialog>
+
+  <dialog id="insert-dialog" class="modal" aria-labelledby="insert-dialog-title">
+    <form id="insert-form" class="modal-box signature-card">
+      <p class="dialog-eyebrow">Insert link</p>
+      <h2 id="insert-dialog-title" class="mt-2 text-xl font-bold">插入链接</h2>
+      <input id="insert-kind" type="hidden" value="link">
+      <label class="field-label" id="insert-text-label">显示文字
+        <input id="insert-text" class="input input-sm" type="text" placeholder="链接文字">
+      </label>
+      <label class="field-label">链接地址
+        <input id="insert-url" class="input input-sm" type="url" required placeholder="https://example.com">
+      </label>
+      <div class="modal-action">
+        <button id="insert-cancel" class="btn btn-sm" type="button">取消</button>
+        <button class="btn btn-sm btn-primary" type="submit">插入</button>
+      </div>
+    </form>
+    <form method="dialog" class="modal-backdrop"><button aria-label="关闭">close</button></form>
+  </dialog>
+
+  <dialog id="image-dialog" class="modal" aria-labelledby="image-dialog-title">
+    <form id="image-form" class="modal-box signature-card">
+      <p class="dialog-eyebrow">Insert image</p>
+      <h2 id="image-dialog-title" class="mt-2 text-xl font-bold">插入图片</h2>
+      <div role="tablist" class="tabs tabs-box image-tabs">
+        <button id="image-tab-url" type="button" role="tab" class="tab tab-active" data-image-tab="url">线上图片</button>
+        <button id="image-tab-local" type="button" role="tab" class="tab" data-image-tab="local">本地图片</button>
+      </div>
+      <section id="image-panel-url" class="image-panel active">
+        <label class="field-label">图片地址
+          <input id="image-url" class="input input-sm" type="url" placeholder="https://example.com/image.png">
+        </label>
+        <label class="field-label">图片说明
+          <input id="image-url-alt" class="input input-sm" type="text" placeholder="可选">
+        </label>
+      </section>
+      <section id="image-panel-local" class="image-panel">
+        <label id="image-drop" class="image-drop" for="image-file">
+          <i class="ph ph-upload-simple"></i>
+          <strong>点击选择或拖入图片</strong>
+          <small>PNG、JPG、GIF、WebP，建议不超过 2 MB</small>
+        </label>
+        <input id="image-file" class="file-input file-input-sm" type="file" accept="image/*" hidden>
+        <img id="image-preview" class="image-preview" alt="本地图片预览">
+        <label class="field-label">图片说明
+          <input id="image-local-alt" class="input input-sm" type="text" placeholder="可选">
+        </label>
+      </section>
+      <div class="modal-action">
+        <button id="image-cancel" class="btn btn-sm" type="button">取消</button>
+        <button class="btn btn-sm btn-primary" type="submit">插入图片</button>
+      </div>
+    </form>
+    <form method="dialog" class="modal-backdrop"><button aria-label="关闭">close</button></form>
+  </dialog>
+
+  <script src="assets/themes.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

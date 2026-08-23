@@ -1,0 +1,1326 @@
+/**
+ * 公众号排版系统 —— 应用逻辑
+ *
+ * 数据流（源码为准）：
+ *   Markdown（扩展语法）→ parse() AST → renderWeChat(ast, theme) → 合规内联 HTML（预览 = 复制产物，含 <span leaf>）
+ *
+ * 扩展语法（工具条会插入这些标记）：
+ *   行内：**加粗** *斜体* ==高亮== ++下划线++ ~~删除线~~ %%马克笔%% [[胶囊]] `code` [文](url)
+ *   块级：# ## ### > !!金句 - 1. ``` 表格 --- ![](url) [TOC]
+ *         :::tip/info 标题 … :::
+ *         :::steps（行=标题|描述）  :::cols（行=标题|描述）
+ *         :::timeline（行=标签|标题|内容）  :::center  :::cover（键: 值） :::sign
+ */
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const { themes, order } = window.GZH_THEMES;
+  const leaf = window.GZH_THEMES.helpers.leaf;
+
+  const esc = (s) => s
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  // ============================================================
+  // 行内解析（单遍 tokenizer，不支持标记嵌套）
+  // ============================================================
+
+  const INLINE_RE = new RegExp([
+    '(`[^`]+`)',                    // 1 code
+    '(\\[\\[[^\\]]+\\]\\])',        // 2 [[胶囊]]
+    '(\\[[^\\]]+\\]\\([^)]+\\))',   // 3 [文](url)
+    '(==[^=]+==)',                  // 4 高亮
+    '(%%[^%]+%%)',                  // 5 荧光笔
+    '(\\+\\+[^+]+\\+\\+)',          // 6 下划线
+    '(~~[^~]+~~)',                  // 7 删除线
+    '(\\*\\*[^*]+\\*\\*)',          // 8 加粗
+    '(\\*[^*\\n]+\\*)',             // 9 斜体
+  ].join('|'), 'g');
+
+  // renderers: { strong, em, highlight, underline, strike, mark, tag, code, link, plain }
+  const renderInlineWith = (text, r) => {
+    let out = '';
+    let last = 0;
+    INLINE_RE.lastIndex = 0;
+    let m;
+    while ((m = INLINE_RE.exec(text)) !== null) {
+      if (m.index > last) out += r.plain(esc(text.slice(last, m.index)));
+      const tok = m[0];
+      if (m[1]) out += r.code(esc(tok.slice(1, -1)));
+      else if (m[2]) out += r.tag(esc(tok.slice(2, -2)));
+      else if (m[3]) {
+        const lm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+        out += r.link(esc(lm[1]), esc(lm[2]));
+      }
+      else if (m[4]) out += r.highlight(esc(tok.slice(2, -2)));
+      else if (m[5]) out += r.mark(esc(tok.slice(2, -2)));
+      else if (m[6]) out += r.underline(esc(tok.slice(2, -2)));
+      else if (m[7]) out += r.strike(esc(tok.slice(2, -2)));
+      else if (m[8]) out += r.strong(esc(tok.slice(2, -2)));
+      else if (m[9]) out += r.em(esc(tok.slice(1, -1)));
+      last = INLINE_RE.lastIndex;
+    }
+    if (last < text.length) out += r.plain(esc(text.slice(last)));
+    return out;
+  };
+
+  // 主题行内渲染（纯文本段包 <span leaf>）
+  const inlineWx = (text, theme) => renderInlineWith(text, { ...theme.inline, plain: (t) => (t ? leaf(t) : '') });
+
+  // ============================================================
+  // 块级解析 → AST
+  // ============================================================
+
+  const CONTAINER_KINDS = ['tip', 'info', 'steps', 'cols', 'timeline', 'center', 'cover', 'sign'];
+
+  const parse = (raw) => {
+    const lines = raw.replace(/\r\n/g, '\n').split('\n');
+    const ast = [];
+    let i = 0;
+
+    const isBlockStart = (l) =>
+      /^\s*$/.test(l) || /^#{1,3}\s+/.test(l) || /^\s*>\s?/.test(l) || /^\s*!!\s+/.test(l)
+      || /^\s*-\s+/.test(l) || /^\s*\d+\.\s+/.test(l) || /^\s*(---|\*\*\*|___)\s*$/.test(l)
+      || /^```/.test(l) || /^\s*\|/.test(l) || /^:::/.test(l) || /^\s*\[TOC\]\s*$/i.test(l)
+      || /^\s*!\[[^\]]*\]\([^)]+\)\s*$/.test(l);
+
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^\s*$/.test(line)) { i++; continue; }
+      let m;
+
+      // 代码围栏
+      if ((m = line.match(/^```(\S*)\s*$/))) {
+        const lang = m[1] || '';
+        const buf = [];
+        i++;
+        while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+        i++;
+        ast.push({ type: 'fence', lang, lines: buf });
+        continue;
+      }
+
+      // ::: 容器
+      if ((m = line.match(/^:::\s*([a-zA-Z]+)\s*(.*)$/))) {
+        const kind = m[1].toLowerCase();
+        const title = m[2].trim();
+        const buf = [];
+        i++;
+        while (i < lines.length && !/^:::\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+        i++;
+        if (CONTAINER_KINDS.includes(kind)) ast.push({ type: kind, title, lines: buf.filter((l) => l.trim() !== '') });
+        continue;
+      }
+
+      // 标题
+      if ((m = line.match(/^(#{1,3})\s+(.+)$/))) {
+        const level = m[1].length;
+        const text = m[2].trim();
+        if (level === 1) ast.push({ type: 'title', text });
+        else if (level === 2) {
+          const parts = text.split('|');
+          ast.push({ type: 'chapter', text: parts[0].trim(), tag: (parts[1] || '').trim() });
+        } else ast.push({ type: 'sub', text });
+        i++; continue;
+      }
+
+      if (/^\s*\[TOC\]\s*$/i.test(line)) { ast.push({ type: 'toc' }); i++; continue; }
+      if (/^\s*(---|\*\*\*|___)\s*$/.test(line)) { ast.push({ type: 'hr' }); i++; continue; }
+
+      // 独立成行的图片
+      if ((m = line.match(/^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$/))) {
+        const cap = m[1].trim();
+        const src = m[2].trim();
+        ast.push({ type: 'image', src, caption: cap, isGif: /\.gif(\?|$)/i.test(src) || /动图/.test(cap) });
+        i++; continue;
+      }
+
+      // 金句
+      if ((m = line.match(/^\s*!!\s+(.+)$/))) { ast.push({ type: 'golden', text: m[1].trim() }); i++; continue; }
+
+      // 引用
+      if (/^\s*>\s?/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, '')); i++; }
+        ast.push({ type: 'quote', paras: buf });
+        continue;
+      }
+
+      // 无序列表仅支持 Markdown 的 "- 内容" 形式
+      if (/^\s*-\s+/.test(line)) {
+        const marker = /^\s*-\s+/;
+        const items = [];
+        while (i < lines.length && marker.test(lines[i])) { items.push(lines[i].replace(marker, '')); i++; }
+        ast.push({ type: 'ul', items });
+        continue;
+      }
+      if (/^\s*\d+\.\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, '')); i++; }
+        ast.push({ type: 'ol', items });
+        continue;
+      }
+
+      // 表格
+      if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|?\s*$/.test(lines[i + 1])) {
+        const parseCells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+        const head = parseCells(line);
+        i += 2;
+        const rows = [];
+        while (i < lines.length && /^\s*\|/.test(lines[i])) { rows.push(parseCells(lines[i])); i++; }
+        ast.push({ type: 'table', head, rows });
+        continue;
+      }
+
+      // 段落（连续非空且非块起始行合并）
+      const buf = [line];
+      i++;
+      while (i < lines.length && !isBlockStart(lines[i])) { buf.push(lines[i]); i++; }
+      ast.push({ type: 'p', linesArr: buf });
+    }
+
+    // 元信息：标题 + 章节编号
+    const meta = { title: '', chapters: [] };
+    const titleNode = ast.find((n) => n.type === 'title');
+    if (titleNode) meta.title = titleNode.text.replace(/[*=+~%[\]`_]/g, '');
+    const chapters = ast.filter((n) => n.type === 'chapter');
+    chapters.forEach((c, idx) => {
+      c.index = idx;
+      c.isLast = idx === chapters.length - 1 && /写在最后|总结|结语|尾声|最后的话/.test(c.text);
+      c.num = c.isLast ? '///' : String(idx + 1).padStart(2, '0');
+      if (!c.tag) c.tag = autoTag(c.text);
+      meta.chapters.push(c);
+    });
+    return { ast, meta };
+  };
+
+  // 英文标签保持短单词，避免在目录卡（110px）里折行
+  const TAG_MAP = [
+    [/实测|测评|体验/, 'TEST'], [/教程|上手|怎么|如何/, 'TUTORIAL'],
+    [/写在最后|总结|结语|尾声/, 'FINAL'], [/思考|反思|感悟/, 'THOUGHTS'],
+    [/工具|清单|盘点/, 'TOOLBOX'], [/方法|方法论|技巧/, 'METHOD'],
+    [/背景|起因|缘起/, 'CONTEXT'], [/案例|实战|实践/, 'CASE'],
+    [/数据|复盘|回顾/, 'REVIEW'], [/踩坑|避坑|坑/, 'PITFALLS'],
+    [/原理|本质|逻辑/, 'INSIGHT'], [/观点|看法/, 'OPINION'],
+  ];
+  const autoTag = (text) => {
+    for (const [re, tag] of TAG_MAP) if (re.test(text)) return tag;
+    return 'CHAPTER';
+  };
+
+  const parsePipeItems = (linesArr, n) => linesArr
+    .filter((l) => !/^\s*>/.test(l))
+    .map((l) => {
+      const parts = l.split('|').map((s) => s.trim());
+      if (n === 3) return { tag: parts[0] || '', title: parts[1] || '', body: parts[2] || '' };
+      return { t: parts[0] || '', d: parts[1] || '' };
+    });
+  const parseNote = (linesArr) => {
+    const noteLine = linesArr.find((l) => /^\s*>/.test(l));
+    return noteLine ? noteLine.replace(/^\s*>\s?/, '') : '';
+  };
+  const parseKv = (linesArr) => {
+    const kv = {};
+    linesArr.forEach((l) => {
+      const mm = l.match(/^\s*([^:：]+)[:：]\s*(.*)$/);
+      if (mm) kv[mm[1].trim()] = mm[2].trim();
+    });
+    return kv;
+  };
+
+  // ============================================================
+  // 渲染：公众号合规 HTML
+  // ============================================================
+
+  const FLOW_TYPES = ['sub', 'p', 'quote', 'golden', 'center', 'ul', 'ol', 'fence', 'table', 'image',
+    'tip', 'info', 'steps', 'cols', 'timeline'];
+  const BODY_FONT_BASE = 14;
+  const BODY_FONT_DEFAULT = 15;
+  const BODY_FONT_MIN = 12;
+  const BODY_FONT_MAX = 20;
+  const SIGNATURE_DEFAULT = {
+    name: '作者名',
+    bio: '一句话介绍自己',
+  };
+
+  // 主题中的 14px 是常规正文基准字号；渲染后统一替换，确保预览与复制产物一致。
+  const applyBodyFontSize = (html, size) =>
+    size === BODY_FONT_BASE ? html : html.replace(/font-size:14px/g, `font-size:${size}px`);
+
+  const renderWeChat = (parsed, theme, bodyFontSize = BODY_FONT_DEFAULT, signature = SIGNATURE_DEFAULT) => {
+    const { ast, meta } = parsed;
+    const B = theme.blocks;
+    const inl = (t) => inlineWx(t, theme);
+    const paras = (arr) => arr.map(inl);
+    const out = [];
+
+    for (const node of ast) {
+      let html = '';
+      switch (node.type) {
+        // title 不进正文：公众号文章标题在平台单独设置，# 只供预览头部/封面/贴图用
+        case 'chapter': html = B.chapter({ num: node.num, tag: node.tag, title: inl(node.text), isLast: node.isLast, first: node.index === 0 }); break;
+        case 'sub': html = B.sub(inl(node.text)); break;
+        case 'p': html = B.p(node.linesArr.map(inl).join('<br>')); break;
+        case 'quote': html = B.quote(paras(node.paras)); break;
+        case 'golden': html = B.golden(inl(node.text)); break;
+        case 'center': html = B.center(node.lines.map(inl).join('<br>')); break;
+        case 'ul': html = B.ul(node.items.map(inl)); break;
+        case 'ol': html = B.ol(node.items.map(inl)); break;
+        case 'fence': html = B.fence({ lang: esc(node.lang), lines: node.lines.map((l) => esc(l).replace(/^( +)/, (s) => '　'.repeat(Math.ceil(s.length / 2)))) }); break;
+        case 'table': {
+          // 单元格内的 <br> 转真换行（先按 <br> 切开再分段行内渲染，避免被转义成文字）
+          const cell = (c) => c.split(/<br\s*\/?>/i).map(inl).join('<br>');
+          html = B.table({ head: node.head.map(cell), rows: node.rows.map((r) => r.map(cell)) });
+          break;
+        }
+        case 'hr': html = B.hr(); break;
+        case 'image': html = B.image({ src: esc(node.src), caption: node.caption, isGif: node.isGif }); break;
+        case 'tip': case 'info':
+          html = B[node.type]({ title: node.title, paras: paras(node.lines) }); break;
+        case 'steps': html = B.steps({ items: parsePipeItems(node.lines, 2), note: parseNote(node.lines) }); break;
+        case 'cols': html = B.cols({ items: parsePipeItems(node.lines, 2) }); break;
+        case 'timeline': {
+          const items = parsePipeItems(node.lines, 3).map((it) => ({ ...it, body: inl(it.body) }));
+          html = B.timeline({ items });
+          break;
+        }
+        case 'toc': {
+          if (!meta.chapters.length) break;
+          const items = meta.chapters.map((c) => ({ num: c.num, title: c.text, sub: c.tag }));
+          html = B.toc({ items });
+          break;
+        }
+        case 'cover': {
+          const kv = parseKv(node.lines);
+          const d = new Date();
+          html = B.cover({
+            label: kv['标签'] || kv.label || 'FEATURE',
+            date: kv['日期'] || kv.date || `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}`,
+            old: kv['旧认知'] || kv.old || '',
+            line1: kv['标题'] || kv.title || meta.title || '未命名文章',
+            green: kv['高亮词'] || kv.green || '',
+            line2: kv['标题2'] || kv.line2 || '',
+            sub: kv['副标题'] || kv.sub || '',
+            brand: kv['品牌'] || kv.brand || '',
+            tags: (kv['标签组'] || kv.tags || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+          });
+          break;
+        }
+        case 'sign': {
+          const ls = node.lines;
+          html = B.sign({
+            name: (ls[0] || signature.name).trim(),
+            bio: (ls[1] === undefined ? signature.bio : ls[1]).trim().replace(/。$/, ''),
+          });
+          break;
+        }
+      }
+      if (!html) continue;
+      out.push(FLOW_TYPES.includes(node.type) ? theme.wrapFlow(html) : html);
+    }
+    return applyBodyFontSize(theme.container(out.join('\n')), bodyFontSize);
+  };
+
+  // ============================================================
+  // 半角标点检测与修复（中文语境；跳过代码）
+  // ============================================================
+
+  const CJK = /[\u4e00-\u9fff\u3400-\u4dbf。，！？：；、""''（）]/;
+  const PUNCT_MAP = { ',': '，', '.': '。', '!': '！', '?': '？', ':': '：', ';': '；', '(': '（', ')': '）' };
+
+  // 把一行按行内代码切开，只对非代码片段执行 fn
+  const mapOutsideCode = (line, fn) =>
+    line.split(/(`[^`]*`)/).map((seg) => (seg.startsWith('`') ? seg : fn(seg))).join('');
+
+  const walkTextLines = (raw, fn) => {
+    const lines = raw.split('\n');
+    let inFence = false;
+    return lines.map((line) => {
+      if (/^```/.test(line)) { inFence = !inFence; return line; }
+      if (inFence) return line;
+      return fn(line);
+    }).join('\n');
+  };
+
+  const countHalfPunct = (raw) => {
+    let count = 0;
+    walkTextLines(raw, (line) => {
+      mapOutsideCode(line, (seg) => {
+        if (/https?:\/\//.test(seg)) return seg;
+        for (let k = 1; k < seg.length; k++) {
+          if (PUNCT_MAP[seg[k]] && CJK.test(seg[k - 1])) count++;
+          if ((seg[k] === '"' || seg[k] === "'") && (CJK.test(seg[k - 1] || '') || CJK.test(seg[k + 1] || ''))) count++;
+        }
+        return seg;
+      });
+      return line;
+    });
+    return count;
+  };
+
+  const fixHalfPunct = (raw) => {
+    let dq = 0, sq = 0;
+    return walkTextLines(raw, (line) => mapOutsideCode(line, (seg) => {
+      if (/https?:\/\//.test(seg)) return seg;
+      let res = '';
+      for (let k = 0; k < seg.length; k++) {
+        const ch = seg[k];
+        const prev = seg[k - 1] || '';
+        const next = seg[k + 1] || '';
+        if (PUNCT_MAP[ch] && CJK.test(prev)) {
+          // 小数/序号（3.14、1.）不转
+          if (ch === '.' && /\d/.test(next)) { res += ch; continue; }
+          res += PUNCT_MAP[ch]; continue;
+        }
+        if (ch === '"' && (CJK.test(prev) || CJK.test(next))) { res += (dq++ % 2 === 0 ? '“' : '”'); continue; }
+        if (ch === "'" && (CJK.test(prev) || CJK.test(next))) { res += (sq++ % 2 === 0 ? '‘' : '’'); continue; }
+        res += ch;
+      }
+      return res;
+    }));
+  };
+
+  // ============================================================
+  // UI 状态与主流程
+  // ============================================================
+
+  const input = $('input');
+  const preview = $('preview');
+  const charCount = $('char-count');
+  const punctBtn = $('btn-punct');
+  const toast = $('toast');
+  const bodyFontValue = $('body-font-value');
+  const fontDecBtn = $('btn-font-dec');
+  const fontIncBtn = $('btn-font-inc');
+  const signatureDialog = $('signature-dialog');
+  const signatureForm = $('signature-form');
+  const signatureNameInput = $('signature-name');
+  const signatureBioInput = $('signature-bio');
+
+  let currentTheme = localStorage.getItem('gzh-theme') || order[0];
+  if (!themes[currentTheme]) currentTheme = order[0];
+  const savedBodyFontSize = Number.parseInt(localStorage.getItem('gzh-body-font-size'), 10);
+  let bodyFontSize = Number.isFinite(savedBodyFontSize)
+    ? Math.min(BODY_FONT_MAX, Math.max(BODY_FONT_MIN, savedBodyFontSize))
+    : BODY_FONT_DEFAULT;
+  const storedSignatureName = localStorage.getItem('gzh-signature-name');
+  const storedSignatureBio = localStorage.getItem('gzh-signature-bio');
+  let defaultSignature = {
+    name: storedSignatureName && storedSignatureName.trim() ? storedSignatureName.trim() : SIGNATURE_DEFAULT.name,
+    bio: storedSignatureBio === null ? SIGNATURE_DEFAULT.bio : storedSignatureBio.trim(),
+  };
+  let parsed = { ast: [], meta: { title: '', chapters: [] } };
+
+  const showToast = (msg) => {
+    const target = toast.querySelector('span') || toast;
+    target.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove('show'), 2000);
+  };
+
+  const update = () => {
+    const text = input.value;
+    parsed = parse(text);
+    preview.innerHTML = renderWeChat(parsed, themes[currentTheme], bodyFontSize, defaultSignature);
+    charCount.textContent = `正文约 ${[...preview.innerText.replace(/\s/g, '')].length} 字`;
+    const n = countHalfPunct(text);
+    punctBtn.textContent = n > 0 ? `半角标点 ${n} 处，点我修复` : '标点 ✓';
+    punctBtn.classList.toggle('warn', n > 0);
+    const t = parsed.meta.title || '公众号文章';
+    $('phone-title').textContent = t.length > 14 ? t.slice(0, 14) + '...' : t;
+    try {
+      localStorage.setItem('gzh-draft', text);
+    } catch {
+      saveState && (saveState.textContent = '草稿过大，未能自动保存');
+    }
+  };
+
+  const syncBodyFontStepper = () => {
+    bodyFontValue.textContent = `${bodyFontSize}px`;
+    fontDecBtn.disabled = bodyFontSize <= BODY_FONT_MIN;
+    fontIncBtn.disabled = bodyFontSize >= BODY_FONT_MAX;
+  };
+
+  const changeBodyFontSize = (step) => {
+    const next = Math.min(BODY_FONT_MAX, Math.max(BODY_FONT_MIN, bodyFontSize + step));
+    if (next === bodyFontSize) return;
+    bodyFontSize = next;
+    localStorage.setItem('gzh-body-font-size', String(bodyFontSize));
+    syncBodyFontStepper();
+    update();
+  };
+
+  // ---------- 编辑历史（Ctrl/Cmd+Z 撤销，Shift+Z 或 Ctrl+Y 重做） ----------
+  // textarea 的原生撤销会被程序化赋值打断，这里自建快照栈：
+  // 输入停顿 400ms 落一次快照；工具条插入/AI 排版/标点修复等程序化改动即时落盘
+  const history = { stack: [{ v: '', s: 0 }], idx: 0 };
+  let typeTimer = null;
+  const commitHistory = () => {
+    clearTimeout(typeTimer);
+    const v = input.value;
+    if (history.stack[history.idx] && history.stack[history.idx].v === v) return;
+    history.stack.length = history.idx + 1; // 丢弃重做分支
+    history.stack.push({ v, s: input.selectionStart });
+    if (history.stack.length > 100) history.stack.shift();
+    history.idx = history.stack.length - 1;
+  };
+  const applyHistory = () => {
+    const snap = history.stack[history.idx];
+    input.value = snap.v;
+    input.focus();
+    input.setSelectionRange(snap.s, snap.s);
+    update();
+  };
+  const undoEdit = () => { commitHistory(); if (history.idx > 0) { history.idx--; applyHistory(); } };
+  const redoEdit = () => { if (history.idx < history.stack.length - 1) { history.idx++; applyHistory(); } };
+
+  // ---------- 主题切换 ----------
+  const themeBar = $('theme-bar');
+  const renderThemeBar = () => {
+    themeBar.innerHTML = '';
+    order.forEach((id) => {
+      const th = themes[id];
+      const btn = document.createElement('button');
+      btn.className = 'theme-chip' + (id === currentTheme ? ' active' : '');
+      btn.innerHTML = `<span class="dot" style="background:${th.uiColor}"></span>${th.name}`;
+      btn.addEventListener('click', () => {
+        currentTheme = id;
+        localStorage.setItem('gzh-theme', id);
+        renderThemeBar();
+        buildToolbar(); // 行内按钮样式跟随主题重绘
+        update();
+      });
+      themeBar.appendChild(btn);
+    });
+  };
+
+  // ---------- 编辑器工具条 ----------
+
+  const wrapSelection = (before, after) => {
+    commitHistory(); // 先落盘未提交的输入
+    const s = input.selectionStart;
+    const e = input.selectionEnd;
+    const sel = input.value.slice(s, e) || '文字';
+    input.value = input.value.slice(0, s) + before + sel + after + input.value.slice(e);
+    input.focus();
+    input.setSelectionRange(s + before.length, s + before.length + sel.length);
+    update();
+    commitHistory();
+  };
+
+  const insertAtSelection = (markdown) => {
+    commitHistory();
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    input.value = input.value.slice(0, start) + markdown + input.value.slice(end);
+    input.focus();
+    input.setSelectionRange(start + markdown.length, start + markdown.length);
+    update();
+    commitHistory();
+  };
+
+  const insertBlock = (tpl) => {
+    commitHistory();
+    const s = input.selectionStart;
+    const before = input.value.slice(0, s);
+    const prefix = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+    const text = prefix + tpl + '\n';
+    input.value = before + text + input.value.slice(input.selectionEnd);
+    input.focus();
+    const pos = s + text.length;
+    input.setSelectionRange(pos, pos);
+    update();
+    commitHistory();
+  };
+
+  // 按使用频率降序；[行内渲染器 key, 按钮文字, 提示, 前缀, 后缀]
+  // 按钮文字会直接用当前主题的真实样式渲染（所见即所得）
+  const INLINE_TOOLS = [
+    ['strong', '加粗', '主色加粗（核心概念，全文 ≤5 处）', '**', '**'],
+    ['underline', '下划线', '主色下划线（正文关键词默认标记，用得最多）', '++', '++'],
+    ['highlight', '高亮', '渐变高亮（全文 ≤3 处）', '==', '=='],
+    ['mark', '马克笔', '黄色马克笔色块（行内强调）', '%%', '%%'],
+    ['tag', '胶囊', '行内胶囊（可单独使用，也可放进列表）', '[[', ']]'],
+    ['link', '链接', '行内链接（选中文字后再替换链接URL）', '[', '](链接URL)'],
+    ['code', '行内代码', '行内代码（命令/标识符）', '`', '`'],
+    ['strike', '删除线', '删除线（被淘汰的旧概念）', '~~', '~~'],
+    ['em', '斜体', '行内斜体（语气或术语强调）', '*', '*'],
+  ];
+
+  // 按用户指定顺序排列；[单色图示, 按钮文字, 插入模板, 可选提示]
+  const BLOCK_TOOLS = [
+    ['•', '无序列表', '- 普通列表第一项\n- [[带胶囊的列表项]]'],
+    ['①', '有序列表', '1. 有序列表第一项\n2. [[带胶囊的列表项]]'],
+    ['H2', '章节', '## 章节标题 | CHAPTER'],
+    ['H3', '小标题', '### 小标题'],
+    ['❞', '引用', '> 引用内容'],
+    ['▣', '图片', '![图片说明](图片URL)'],
+    ['❝', '金句', '!! 这里是核心金句'],
+    ['═', '居中金句', ':::center\n居中金句一行\n:::'],
+    ['!', '提示', ':::tip 操作提示\n提示内容\n:::'],
+    ['ⓘ', '信息', ':::info 补充信息\n信息内容\n:::'],
+    ['—', '分隔线', '---'],
+    ['⊞', '表格', '| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n| 内容 | 内容 | 内容 |'],
+    ['</>', '代码块', '```bash\n命令或代码\n```'],
+    ['⇢', '流程', ':::steps\n第一步|描述\n第二步|描述\n第三步|描述\n> 底部说明（可删）\n:::'],
+    ['‖‖', '三列', ':::cols\n方案A|描述\n方案B|描述\n方案C|描述\n:::'],
+    ['⋮', '时间线', ':::timeline\nCASE 01|标题一|内容一\nCASE 02|标题二|内容二\n:::'],
+    ['H1', '文章标题', '# 文章标题', '仅同步到手机预览栏，不进入复制正文'],
+    ['⬒', '封面', ':::cover\n标签：FEATURE\n旧认知：被颠覆的旧观念\n标题：主标题前半\n高亮词：强调词\n标题2：第二行（可删）\n副标题：关键词 · 用点分隔\n品牌：墨排编辑器\n:::'],
+    ['☰', '目录', '[TOC]'],
+    ['✎', '签名', () => `:::sign\n${defaultSignature.name}\n${defaultSignature.bio ? defaultSignature.bio + '\n' : ''}:::`],
+  ];
+
+  // ---------- 工具条悬浮样式预览 ----------
+
+  const stylePop = document.createElement('div');
+  stylePop.className = 'style-pop';
+  document.body.appendChild(stylePop);
+  let popTimer = null;
+  const popCache = {};
+
+  // 图片预览用的占位图（data URI，不依赖网络）
+  const PREVIEW_IMG = "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='110'%3E%3Crect width='100%25' height='100%25' fill='%23E5E7EB'/%3E%3C/svg%3E";
+
+  // 个别块组件的插入模板不能直接独立渲染，用专门的预览源码
+  const BLOCK_PREVIEW = {
+    '文章标题': { md: '# 示例文章标题\n\n文章标题仅同步到手机预览栏，不进入复制正文。' },
+    '目录': { md: '[TOC]\n\n## 先说结论 | OPINION\n\n## 实测过程 | TEST\n\n## 写在最后 | FINAL', pickFirst: true },
+    '图片': { md: `![示例图片说明](${PREVIEW_IMG})` },
+  };
+
+  const previewHtml = (md, pickFirst) => {
+    const html = renderWeChat(parse(md), themes[currentTheme], bodyFontSize, defaultSignature);
+    if (!pickFirst) return html;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    const cont = tmp.firstElementChild;
+    while (cont && cont.children.length > 1) cont.removeChild(cont.lastElementChild);
+    return tmp.innerHTML;
+  };
+
+  const showPop = (btn, key, mdFactory, pickFirst) => {
+    clearTimeout(popTimer);
+    popTimer = setTimeout(() => {
+      const cacheKey = currentTheme + ':' + bodyFontSize + ':' + defaultSignature.name + ':' + defaultSignature.bio + ':' + key;
+      if (!popCache[cacheKey]) {
+        popCache[cacheKey] = `<p class="pop-label">样式预览 · ${themes[currentTheme].name}</p>` + previewHtml(mdFactory(), pickFirst);
+      }
+      stylePop.innerHTML = popCache[cacheKey];
+      stylePop.classList.add('show');
+      const r = btn.getBoundingClientRect();
+      const w = stylePop.offsetWidth;
+      stylePop.style.left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8) + 'px';
+      stylePop.style.top = (r.bottom + 8) + 'px';
+      // 底部放不下就翻到按钮上方
+      const h = stylePop.offsetHeight;
+      if (r.bottom + 8 + h > window.innerHeight - 8) {
+        stylePop.style.top = Math.max(8, r.top - h - 8) + 'px';
+      }
+    }, 200);
+  };
+  const hidePop = () => { clearTimeout(popTimer); stylePop.classList.remove('show'); };
+
+  const buildToolbar = () => {
+    const inlineBar = $('toolbar-inline');
+    const blockBar = $('toolbar-block');
+    inlineBar.innerHTML = '';
+    blockBar.innerHTML = '';
+    const theme = themes[currentTheme];
+    INLINE_TOOLS.forEach(([key, label, tip, b, a]) => {
+      const btn = document.createElement('button');
+      btn.className = 'tool';
+      // 按钮文字直接穿上当前主题的真实样式；链接避免在 button 内嵌交互式 <a>
+      btn.innerHTML = key === 'link'
+        ? `<span style="color:${theme.uiColor};text-decoration:underline;text-underline-offset:3px;">${label}</span>`
+        : theme.inline[key](label);
+      btn.title = tip + `　${b}文字${a}`;
+      btn.addEventListener('mousedown', (e) => e.preventDefault()); // 保住 textarea 选区
+      btn.addEventListener('click', () => {
+        hidePop();
+        if (key === 'link') openInsertDialog('link');
+        else wrapSelection(b, a);
+      });
+      btn.addEventListener('mouseenter', () => showPop(btn, 'i:' + label,
+        () => `这段正文里，${b}这几个字${a}是当前样式的效果，其余是普通正文。`));
+      btn.addEventListener('mouseleave', hidePop);
+      inlineBar.appendChild(btn);
+    });
+    BLOCK_TOOLS.forEach(([glyph, label, tpl, tip]) => {
+      const getTemplate = () => (typeof tpl === 'function' ? tpl() : tpl);
+      const btn = document.createElement('button');
+      btn.className = 'tool';
+      btn.innerHTML = `<span class="glyph">${glyph}</span>${label}`;
+      btn.title = label === '表格' ? '鼠标框选表格行列' : label === '图片' ? '插入线上或本地图片' : label === '签名' ? '维护默认签名并插入文章' : (tip || getTemplate().split('\n')[0]);
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', () => {
+        hidePop();
+        if (label === '表格') openTablePicker(btn);
+        else if (label === '图片') openImageDialog();
+        else if (label === '签名') openSignatureDialog();
+        else insertBlock(getTemplate());
+      });
+      const pv = BLOCK_PREVIEW[label];
+      if (label !== '表格' && label !== '图片') {
+        btn.addEventListener('mouseenter', () => showPop(btn, 'b:' + label, () => (pv ? pv.md : getTemplate()), pv && pv.pickFirst));
+        btn.addEventListener('mouseleave', hidePop);
+      }
+      blockBar.appendChild(btn);
+    });
+  };
+
+  // ---------- 复制到公众号 ----------
+
+  const copyRich = async () => {
+    const html = preview.innerHTML;
+    const plain = preview.innerText;
+    try {
+      if (navigator.clipboard && window.ClipboardItem) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/html': new Blob([html], { type: 'text/html' }),
+            'text/plain': new Blob([plain], { type: 'text/plain' }),
+          }),
+        ]);
+      } else {
+        const range = document.createRange();
+        range.selectNodeContents(preview);
+        const sel = window.getSelection();
+        sel.removeAllRanges(); sel.addRange(range);
+        document.execCommand('copy');
+        sel.removeAllRanges();
+      }
+      const n = countHalfPunct(input.value);
+      showToast(n > 0 ? `已复制（注意：还有 ${n} 处半角标点建议修复）` : '已复制，去公众号编辑器粘贴吧');
+    } catch (e) {
+      showToast('复制失败：' + e.message);
+    }
+  };
+
+  const copyText = async (text) => {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy'); ta.remove();
+      return ok;
+    }
+  };
+
+  // ---------- AI 一键排版 ----------
+
+  const aiBtn = $('btn-ai');
+  const aiPresetSel = $('ai-preset');
+  const aiUndoBtn = $('btn-ai-undo');
+  let aiBackup = null;
+  let serverOnline = false;
+
+  const initAi = async () => {
+    try {
+      const res = await fetch('/api/presets');
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      serverOnline = true;
+      aiPresetSel.innerHTML = '';
+      data.presets.forEach((p) => {
+        const opt = document.createElement('option');
+        opt.value = p.id; opt.textContent = p.label;
+        if (p.id === data.active) opt.selected = true;
+        aiPresetSel.appendChild(opt);
+      });
+    } catch {
+      serverOnline = false;
+      aiPresetSel.style.display = 'none';
+      aiBtn.textContent = '复制 AI 排版指令';
+      aiBtn.title = '未检测到本地服务（node server.js）。点击复制排版指令，粘到任意 agent 对话执行后把结果贴回来。';
+    }
+  };
+
+  const signatureMarkdown = () => `:::sign\n${defaultSignature.name}\n${defaultSignature.bio ? defaultSignature.bio + '\n' : ''}:::`;
+
+  const AI_FALLBACK_PROMPT = (md) => `请对下面的公众号文章 Markdown 做排版标记优化（不改写内容）：只在承载核心观点、结论、关键数据的句子里标 ++关键词++（宁缺毋滥，不要每段都标，全文大致每 2-3 段 1 处）；全文 ≤5 处 **加粗**；全文 ≤3 处 ==高亮==；提示类内容转 :::tip 块，补充信息转 :::info 块；中文语境标点全角化（代码/URL 除外）；2 个以上 ## 章节时开头加 [TOC]；文末没有签名时追加以下签名块：\n${signatureMarkdown()}\n直接返回优化后的完整 Markdown，不要解释。\n\n${md}`;
+
+  const runAi = async () => {
+    const md = input.value.trim();
+    if (!md) { showToast('先写点内容再排版'); return; }
+    if (!serverOnline) {
+      const ok = await copyText(AI_FALLBACK_PROMPT(md));
+      showToast(ok ? '已复制指令，粘到 agent 对话里执行' : '复制失败');
+      return;
+    }
+    aiBtn.disabled = true;
+    const orig = aiBtn.textContent;
+    aiBtn.textContent = 'AI 排版中…（约 1-3 分钟）';
+    try {
+      const res = await fetch('/api/ai-format', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          markdown: md,
+          preset: aiPresetSel.value,
+          themeName: themes[currentTheme].name,
+          signature: defaultSignature,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      aiBackup = md;
+      input.value = data.markdown;
+      update();
+      commitHistory();
+      aiUndoBtn.style.display = '';
+      showToast(`AI 排版完成（${data.seconds}s），不满意可点「还原」`);
+    } catch (e) {
+      showToast('AI 排版失败：' + e.message);
+    } finally {
+      aiBtn.disabled = false;
+      aiBtn.textContent = orig;
+    }
+  };
+
+  const undoAi = () => {
+    if (aiBackup === null) return;
+    input.value = aiBackup;
+    aiBackup = null;
+    aiUndoBtn.style.display = 'none';
+    update();
+    commitHistory();
+    showToast('已还原到 AI 排版前');
+  };
+
+  // ---------- 示例 ----------
+
+  const SAMPLE = () => `# 这是一篇示例文章
+
+:::cover
+标签：HANDS-ON · 实战
+旧认知：排版只能手动调？
+标题：把“排版”变成
+高亮词：一键的事
+标题2：手动微调照样不耽误
+副标题：双主题 · AI 一键 · 合规校验
+品牌：墨排编辑器
+标签组：WRITING, AI
+:::
+
+[TOC]
+
+!! 开头金句：真正的效率不是快，而是不用返工
+
+这是第一段正文。**核心概念**用主色加粗，++关键短语++用主色下划线标记，还可以用 ==渐变高亮== 强调一段里最重要的话。%%黄色马克笔%%适合行内强调，~~过时的旧概念~~用删除线，[[新概念]]可以显示为胶囊，行内命令写成 \`npm install\`。
+
+## 先说结论 | OPINION
+
+> 引用块用来放原文摘录或补充说明。
+
+:::tip 一个正面提示
+提示块适合放操作建议，标题可以自定义。
+:::
+
+:::info 补充信息
+信息块适合放背景补充和旁注。
+:::
+
+## 实测过程
+
+:::steps
+装环境|一条命令搞定
+跑起来|本地起服务
+验证|贴到公众号看效果
+> 三步走完，全程十分钟
+:::
+
+\`\`\`bash
+node server.js
+# 打开 http://localhost:8765
+\`\`\`
+
+1. 有序列表第一条
+2. [[有序列表中的胶囊]]
+
+- 圆点列表（弱强调，++关键词++照样可标）
+- [[无序列表中的胶囊]]
+
+正文里也能并列使用：[[方案 A]] [[方案 B]] [[方案 C]]
+
+| 方案 | 成本 | 效果 |
+| --- | --- | --- |
+| 手动排版 | 高 | 可控 |
+| AI 一键 | 低 | 稳定 |
+
+## 写在最后
+
+:::center
+样式是给内容让路的
+:::
+
+最后一段正文，说完收工。
+
+:::sign
+${defaultSignature.name}
+${defaultSignature.bio ? defaultSignature.bio + '\n' : ''}:::`;
+
+  // ---------- Markdown 编辑器能力 ----------
+
+  const filenameInput = $('filename');
+  const saveState = $('save-state');
+  const workspace = $('workspace');
+  const insertDialog = $('insert-dialog');
+  const insertForm = $('insert-form');
+  const imageDialog = $('image-dialog');
+  const imageForm = $('image-form');
+  const tablePicker = $('table-picker');
+  const tableGrid = $('table-grid');
+  const phoneScreen = document.querySelector('.phone-screen');
+  const FILE_KEY = 'mopai-filename';
+  const VIEW_KEY = 'mopai-workspace-view';
+  let imageMode = 'url';
+  let pendingImageDataUrl = '';
+  let tableAnchor = null;
+
+  const safeFilename = (extension) => {
+    const raw = (filenameInput.value || '未命名文章').trim().replace(/[\\/:*?\"<>|]/g, '-');
+    const base = raw.replace(/\.(md|markdown|txt|html)$/i, '') || '未命名文章';
+    return `${base}.${extension}`;
+  };
+
+  const downloadText = (content, filename, type) => {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const saveDocument = () => {
+    localStorage.setItem('gzh-draft', input.value);
+    localStorage.setItem(FILE_KEY, filenameInput.value.trim() || '未命名文章.md');
+    saveState.textContent = '已保存';
+    showToast('文档已保存到浏览器');
+  };
+
+  const closeDetails = (id) => {
+    const details = $(id);
+    if (details) details.removeAttribute('open');
+  };
+
+  const openInsertDialog = () => {
+    const selected = input.value.slice(input.selectionStart, input.selectionEnd);
+    $('insert-kind').value = 'link';
+    $('insert-text').value = selected;
+    $('insert-url').value = '';
+    insertDialog.showModal();
+    setTimeout(() => (selected ? $('insert-url') : $('insert-text')).focus(), 0);
+  };
+
+  const switchImageTab = (mode) => {
+    imageMode = mode;
+    $('image-tab-url').classList.toggle('tab-active', mode === 'url');
+    $('image-tab-local').classList.toggle('tab-active', mode === 'local');
+    $('image-panel-url').classList.toggle('active', mode === 'url');
+    $('image-panel-local').classList.toggle('active', mode === 'local');
+  };
+
+  const openImageDialog = () => {
+    const selected = input.value.slice(input.selectionStart, input.selectionEnd);
+    pendingImageDataUrl = '';
+    $('image-url').value = '';
+    $('image-url-alt').value = selected;
+    $('image-local-alt').value = selected;
+    $('image-file').value = '';
+    $('image-preview').removeAttribute('src');
+    $('image-preview').classList.remove('show');
+    switchImageTab('url');
+    imageDialog.showModal();
+    setTimeout(() => $('image-url').focus(), 0);
+  };
+
+  const highlightTableCells = (rows, cols) => {
+    tableGrid.querySelectorAll('.table-grid-cell').forEach((cell) => {
+      cell.classList.toggle('active', Number(cell.dataset.row) <= rows && Number(cell.dataset.col) <= cols);
+    });
+    $('table-size-label').textContent = rows && cols ? `${rows} 行 × ${cols} 列` : '移动鼠标选择表格尺寸';
+  };
+
+  const insertTable = (rows, cols) => {
+    const header = `|${Array.from({ length: cols }, (_, index) => ` 列 ${index + 1} `).join('|')}|`;
+    const separator = `|${Array.from({ length: cols }, () => ' --- ').join('|')}|`;
+    const data = `|${Array.from({ length: cols }, () => ' 内容 ').join('|')}|`;
+    const lines = [header, separator];
+    for (let row = 2; row <= rows; row++) lines.push(data);
+    insertBlock(lines.join('\n'));
+  };
+
+  const initTablePicker = () => {
+    if (tableGrid.children.length) return;
+    for (let row = 1; row <= 8; row++) {
+      for (let col = 1; col <= 8; col++) {
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'table-grid-cell';
+        cell.dataset.row = String(row);
+        cell.dataset.col = String(col);
+        cell.setAttribute('aria-label', `${row} 行 ${col} 列`);
+        tableGrid.appendChild(cell);
+      }
+    }
+    tableGrid.addEventListener('mouseover', (event) => {
+      const cell = event.target.closest('.table-grid-cell');
+      if (cell) highlightTableCells(Number(cell.dataset.row), Number(cell.dataset.col));
+    });
+    tableGrid.addEventListener('mouseleave', () => highlightTableCells(0, 0));
+    tableGrid.addEventListener('click', (event) => {
+      const cell = event.target.closest('.table-grid-cell');
+      if (!cell) return;
+      insertTable(Number(cell.dataset.row), Number(cell.dataset.col));
+      tablePicker.hidden = true;
+    });
+  };
+
+  const openTablePicker = (anchor) => {
+    initTablePicker();
+    tableAnchor = anchor;
+    highlightTableCells(0, 0);
+    tablePicker.hidden = false;
+    const rect = anchor.getBoundingClientRect();
+    const width = tablePicker.offsetWidth;
+    const height = tablePicker.offsetHeight;
+    tablePicker.style.left = `${Math.min(window.innerWidth - width - 8, Math.max(8, rect.left))}px`;
+    tablePicker.style.top = `${rect.bottom + 8 + height > window.innerHeight ? Math.max(8, rect.top - height - 8) : rect.bottom + 8}px`;
+  };
+
+  const insertEditorTemplate = (kind) => {
+    const templates = {
+      h1: '# 文章标题',
+      h2: '## 章节标题 | CHAPTER',
+      h3: '### 小标题',
+      quote: '> 引用内容',
+      ul: '- 列表第一项\n- 列表第二项',
+      ol: '1. 列表第一项\n2. 列表第二项',
+    };
+    if (templates[kind]) insertBlock(templates[kind]);
+    closeDetails('heading-menu');
+  };
+
+  const setWorkspaceView = (mode) => {
+    workspace.classList.toggle('edit-only', mode === 'edit');
+    workspace.classList.toggle('preview-only', mode === 'preview');
+    localStorage.setItem(VIEW_KEY, mode);
+    closeDetails('view-menu');
+  };
+
+  $('btn-save').addEventListener('click', saveDocument);
+  $('btn-import').addEventListener('click', () => { $('file-input').click(); closeDetails('file-menu'); });
+  $('btn-export-md').addEventListener('click', () => {
+    downloadText(input.value, safeFilename('md'), 'text/markdown;charset=utf-8');
+    closeDetails('file-menu');
+    showToast('Markdown 已导出');
+  });
+  $('btn-export-html').addEventListener('click', () => {
+    downloadText(preview.innerHTML, safeFilename('html'), 'text/html;charset=utf-8');
+    closeDetails('file-menu');
+    showToast('公众号 HTML 已导出');
+  });
+  $('file-input').addEventListener('change', (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      commitHistory();
+      input.value = String(reader.result || '');
+      filenameInput.value = file.name;
+      update();
+      commitHistory();
+      saveDocument();
+    };
+    reader.readAsText(file, 'utf-8');
+    event.target.value = '';
+  });
+  filenameInput.addEventListener('input', () => {
+    document.title = `${filenameInput.value.replace(/\.(md|markdown)$/i, '') || '未命名文章'} · 墨排`;
+    localStorage.setItem(FILE_KEY, filenameInput.value);
+  });
+
+  $('btn-undo').addEventListener('click', undoEdit);
+  $('btn-redo').addEventListener('click', redoEdit);
+  document.querySelectorAll('[data-format]').forEach((button) => {
+    button.addEventListener('mousedown', (event) => event.preventDefault());
+    button.addEventListener('click', () => {
+      const wrappers = {
+        strong: ['**', '**'], em: ['*', '*'], underline: ['++', '++'],
+        strike: ['~~', '~~'], code: ['`', '`'],
+      };
+      const pair = wrappers[button.dataset.format];
+      if (pair) wrapSelection(pair[0], pair[1]);
+    });
+  });
+  document.querySelectorAll('[data-insert]').forEach((button) => button.addEventListener('click', () => insertEditorTemplate(button.dataset.insert)));
+  document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => {
+    const action = button.dataset.action;
+    if (action === 'link' || action === 'image') openInsertDialog(action);
+    if (action === 'table') insertBlock('| 列 1 | 列 2 | 列 3 |\n| --- | --- | --- |\n| 内容 | 内容 | 内容 |');
+  }));
+
+  $('insert-cancel').addEventListener('click', () => insertDialog.close());
+  insertForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const kind = $('insert-kind').value;
+    const text = $('insert-text').value.trim() || (kind === 'image' ? '' : '链接文字');
+    const url = $('insert-url').value.trim();
+    if (!url) return;
+    insertDialog.close();
+    insertAtSelection(`[${text}](${url})`);
+  });
+
+  document.querySelectorAll('[data-image-tab]').forEach((button) => {
+    button.addEventListener('click', () => switchImageTab(button.dataset.imageTab));
+  });
+  $('image-cancel').addEventListener('click', () => imageDialog.close());
+
+  const readLocalImage = (file) => {
+    if (!file || !file.type.startsWith('image/')) {
+      showToast('请选择图片文件');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      showToast('图片超过 2 MB，请压缩后再插入');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingImageDataUrl = String(reader.result || '');
+      $('image-preview').src = pendingImageDataUrl;
+      $('image-preview').classList.add('show');
+      if (!$('image-local-alt').value) $('image-local-alt').value = file.name.replace(/\.[^.]+$/, '');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  $('image-file').addEventListener('change', (event) => readLocalImage(event.target.files && event.target.files[0]));
+  $('image-drop').addEventListener('dragover', (event) => { event.preventDefault(); $('image-drop').classList.add('dragging'); });
+  $('image-drop').addEventListener('dragleave', () => $('image-drop').classList.remove('dragging'));
+  $('image-drop').addEventListener('drop', (event) => {
+    event.preventDefault();
+    $('image-drop').classList.remove('dragging');
+    readLocalImage(event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0]);
+  });
+  imageForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const src = imageMode === 'url' ? $('image-url').value.trim() : pendingImageDataUrl;
+    const alt = (imageMode === 'url' ? $('image-url-alt').value : $('image-local-alt').value).trim();
+    if (!src) {
+      showToast(imageMode === 'url' ? '请填写图片地址' : '请先选择本地图片');
+      return;
+    }
+    imageDialog.close();
+    insertBlock(`![${alt.replace(/\]/g, '\\]')}](${src})`);
+  });
+
+  document.addEventListener('mousedown', (event) => {
+    if (!tablePicker.hidden && !tablePicker.contains(event.target) && event.target !== tableAnchor) tablePicker.hidden = true;
+  });
+
+  $('view-phone').addEventListener('click', () => {
+    $('preview-stage').classList.remove('desktop-preview');
+    $('view-phone').classList.add('tab-active');
+    $('view-article').classList.remove('tab-active');
+    localStorage.setItem('mopai-preview-device', 'phone');
+  });
+  $('view-article').addEventListener('click', () => {
+    $('preview-stage').classList.add('desktop-preview');
+    $('view-article').classList.add('tab-active');
+    $('view-phone').classList.remove('tab-active');
+    localStorage.setItem('mopai-preview-device', 'article');
+  });
+  document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => setWorkspaceView(button.dataset.view)));
+
+  // 左右双栏按滚动比例双向同步；手机模式同步手机屏幕，文章模式同步右侧画布。
+  let syncingScroll = false;
+  const previewScroller = () => $('preview-stage').classList.contains('desktop-preview') ? $('preview-stage') : phoneScreen;
+  const syncScroll = (source, target) => {
+    if (syncingScroll || !source || !target) return;
+    const sourceRange = source.scrollHeight - source.clientHeight;
+    const targetRange = target.scrollHeight - target.clientHeight;
+    if (sourceRange <= 0 || targetRange <= 0) return;
+    syncingScroll = true;
+    target.scrollTop = (source.scrollTop / sourceRange) * targetRange;
+    requestAnimationFrame(() => { syncingScroll = false; });
+  };
+  input.addEventListener('scroll', () => syncScroll(input, previewScroller()));
+  phoneScreen.addEventListener('scroll', () => {
+    if (!$('preview-stage').classList.contains('desktop-preview')) syncScroll(phoneScreen, input);
+  });
+  $('preview-stage').addEventListener('scroll', () => {
+    if ($('preview-stage').classList.contains('desktop-preview')) syncScroll($('preview-stage'), input);
+  });
+
+  // 文件拖入编辑区即可打开；图片拖入则转为 Base64 Markdown 图片。
+  input.addEventListener('dragover', (event) => event.preventDefault());
+  input.addEventListener('drop', (event) => {
+    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+    if (!file) return;
+    event.preventDefault();
+    const reader = new FileReader();
+    if (file.type.startsWith('image/')) {
+      reader.onload = () => insertBlock(`![${file.name}](${reader.result})`);
+      reader.readAsDataURL(file);
+    } else {
+      reader.onload = () => {
+        commitHistory(); input.value = String(reader.result || ''); filenameInput.value = file.name;
+        update(); commitHistory(); saveDocument();
+      };
+      reader.readAsText(file, 'utf-8');
+    }
+  });
+
+  // ---------- 事件绑定 ----------
+
+  $('btn-sample').addEventListener('click', () => { commitHistory(); input.value = SAMPLE(); update(); commitHistory(); closeDetails('file-menu'); });
+  $('btn-clear').addEventListener('click', () => { commitHistory(); input.value = ''; update(); commitHistory(); input.focus(); });
+  $('btn-copy').addEventListener('click', copyRich);
+  let signatureSelection = { start: 0, end: 0 };
+  const openSignatureDialog = () => {
+    signatureSelection = { start: input.selectionStart, end: input.selectionEnd };
+    signatureNameInput.value = defaultSignature.name;
+    signatureBioInput.value = defaultSignature.bio;
+    signatureDialog.showModal();
+    signatureNameInput.focus();
+  };
+  $('btn-signature-cancel').addEventListener('click', () => signatureDialog.close());
+  signatureDialog.addEventListener('click', (e) => {
+    if (e.target === signatureDialog) signatureDialog.close();
+  });
+  signatureNameInput.addEventListener('input', () => signatureNameInput.setCustomValidity(''));
+  const saveSignatureSettings = () => {
+    const name = signatureNameInput.value.trim();
+    if (!name) {
+      signatureNameInput.setCustomValidity('请输入作者名');
+      signatureNameInput.reportValidity();
+      return false;
+    }
+    defaultSignature = { name, bio: signatureBioInput.value.trim().replace(/。$/, '') };
+    localStorage.setItem('gzh-signature-name', defaultSignature.name);
+    localStorage.setItem('gzh-signature-bio', defaultSignature.bio);
+    update();
+    return true;
+  };
+  $('btn-signature-save').addEventListener('click', () => {
+    if (!saveSignatureSettings()) return;
+    signatureDialog.close();
+    showToast('默认签名已保存');
+  });
+  signatureForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!saveSignatureSettings()) return;
+    signatureDialog.close();
+    input.focus();
+    input.setSelectionRange(signatureSelection.start, signatureSelection.end);
+    insertBlock(signatureMarkdown());
+    showToast('默认签名已保存并插入');
+  });
+  fontDecBtn.addEventListener('click', () => changeBodyFontSize(-1));
+  fontIncBtn.addEventListener('click', () => changeBodyFontSize(1));
+  punctBtn.addEventListener('click', () => {
+    if (!countHalfPunct(input.value)) { showToast('没有需要修复的半角标点'); return; }
+    commitHistory();
+    input.value = fixHalfPunct(input.value);
+    update();
+    commitHistory();
+    showToast('已把中文语境的半角标点转为全角');
+  });
+  aiBtn.addEventListener('click', runAi);
+  aiUndoBtn.addEventListener('click', undoAi);
+  input.addEventListener('input', () => {
+    saveState.textContent = '保存中…';
+    update();
+    clearTimeout(typeTimer);
+    typeTimer = setTimeout(() => {
+      commitHistory();
+      saveState.textContent = '已自动保存';
+    }, 400);
+  });
+  input.addEventListener('keydown', (e) => {
+    const cmd = e.metaKey || e.ctrlKey;
+    const key = e.key.toLowerCase();
+    if (cmd && key === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) redoEdit(); else undoEdit();
+    } else if (cmd && key === 'y') {
+      e.preventDefault(); redoEdit();
+    } else if (cmd && key === 's') {
+      e.preventDefault(); saveDocument();
+    } else if (cmd && key === 'b') {
+      e.preventDefault(); wrapSelection('**', '**');
+    } else if (cmd && key === 'i') {
+      e.preventDefault(); wrapSelection('*', '*');
+    } else if (cmd && key === 'u') {
+      e.preventDefault(); wrapSelection('++', '++');
+    } else if (cmd && key === 'k') {
+      e.preventDefault(); openInsertDialog('link');
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = input.selectionStart;
+      input.setRangeText('  ', start, input.selectionEnd, 'end');
+      update();
+    }
+  });
+
+  // ---------- 左右分栏宽度拖拽 ----------
+  const splitHandle = $('split-handle');
+  const mainEl = document.querySelector('main');
+  const savedSplit = localStorage.getItem('gzh-split');
+  if (savedSplit) mainEl.style.setProperty('--split', savedSplit);
+  let splitDragging = false;
+  splitHandle.addEventListener('mousedown', (e) => {
+    splitDragging = true;
+    splitHandle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!splitDragging) return;
+    const rect = mainEl.getBoundingClientRect();
+    const pct = Math.min(75, Math.max(25, ((e.clientX - rect.left) / rect.width) * 100));
+    mainEl.style.setProperty('--split', pct.toFixed(1) + '%');
+  });
+  window.addEventListener('mouseup', () => {
+    if (!splitDragging) return;
+    splitDragging = false;
+    splitHandle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    localStorage.setItem('gzh-split', mainEl.style.getPropertyValue('--split'));
+  });
+
+  // ---------- 时钟 ----------
+  const tickClock = () => {
+    const d = new Date();
+    const s = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    $('phone-time').textContent = s;
+    $('phone-time-bar').textContent = s;
+  };
+  tickClock();
+  setInterval(tickClock, 30 * 1000);
+
+  // ---------- 启动 ----------
+  renderThemeBar();
+  buildToolbar();
+  syncBodyFontStepper();
+  const draft = localStorage.getItem('gzh-draft');
+  input.value = draft === null ? SAMPLE() : draft;
+  filenameInput.value = localStorage.getItem(FILE_KEY) || '未命名文章.md';
+  filenameInput.dispatchEvent(new Event('input'));
+  setWorkspaceView(localStorage.getItem(VIEW_KEY) || 'both');
+  if (localStorage.getItem('mopai-preview-device') === 'article') $('view-article').click();
+  update();
+  history.stack = [{ v: input.value, s: input.value.length }];
+  history.idx = 0;
+  initAi();
+})();

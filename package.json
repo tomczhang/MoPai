@@ -1,0 +1,13 @@
+{
+  "name": "mopai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Markdown 与微信公众号 AI 排版工作台",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check assets/app.js && node --check assets/themes.js && node --check server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
