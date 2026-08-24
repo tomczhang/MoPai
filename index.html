@@ -163,8 +163,8 @@
     .desktop-preview .phone-content { padding: 34px 38px 70px; }
 
     .preview-tools { display: flex; align-items: center; gap: 8px; }
-    .preview-tabs { height: 30px; padding: 2px; background: var(--app-stage); }
-    .preview-tabs .tab { height: 24px; min-height: 24px; padding-inline: 10px; font-size: 10px; color: var(--app-muted); }
+    .preview-tabs { display: inline-flex; align-items: center; height: 30px; min-height: 30px; padding: 3px; border-radius: 9px; background: var(--app-stage); }
+    .preview-tabs .tab { display: inline-flex; align-items: center; justify-content: center; height: 24px; min-height: 24px; padding: 0 10px; border-radius: 7px; font-size: 10px; line-height: 1; color: var(--app-muted); }
     .preview-tabs .tab-active { background: #fff; color: var(--app-accent); box-shadow: 0 1px 2px rgba(15,23,42,.08); }
     .font-stepper { display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 2px 3px 2px 8px; border: 1px solid var(--app-line); border-radius: 8px; background: #fff; }
     .font-stepper span, .font-stepper output { font-size: 10px; color: var(--app-muted); }
@@ -344,7 +344,7 @@
         <header class="panel-head">
           <h2 id="preview-heading" class="panel-title"><span class="panel-no">02</span> 公众号预览</h2>
           <div class="preview-tools">
-            <div role="tablist" class="tabs tabs-box preview-tabs" aria-label="预览设备">
+            <div role="tablist" class="tabs preview-tabs" aria-label="预览设备">
               <button id="view-phone" role="tab" class="tab tab-active">手机</button>
               <button id="view-article" role="tab" class="tab">文章</button>
             </div>

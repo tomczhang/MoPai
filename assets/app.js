@@ -248,9 +248,17 @@
   const applyBodyFontSize = (html, size) =>
     size === BODY_FONT_BASE ? html : html.replace(/font-size:14px/g, `font-size:${size}px`);
 
+  const contentGutterForFont = (size) => {
+    if (size <= 14) return 20;
+    if (size <= 16) return 16;
+    if (size <= 18) return 14;
+    return 12;
+  };
+
   const renderWeChat = (parsed, theme, bodyFontSize = BODY_FONT_DEFAULT, signature = SIGNATURE_DEFAULT) => {
     const { ast, meta } = parsed;
     const B = theme.blocks;
+    const contentGutter = contentGutterForFont(bodyFontSize);
     const inl = (t) => inlineWx(t, theme);
     const paras = (arr) => arr.map(inl);
     const out = [];
@@ -259,7 +267,7 @@
       let html = '';
       switch (node.type) {
         // title 不进正文：公众号文章标题在平台单独设置，# 只供预览头部/封面/贴图用
-        case 'chapter': html = B.chapter({ num: node.num, tag: node.tag, title: inl(node.text), isLast: node.isLast, first: node.index === 0 }); break;
+        case 'chapter': html = B.chapter({ num: node.num, tag: node.tag, title: inl(node.text), isLast: node.isLast, first: node.index === 0, gutter: contentGutter }); break;
         case 'sub': html = B.sub(inl(node.text)); break;
         case 'p': html = B.p(node.linesArr.map(inl).join('<br>')); break;
         case 'quote': html = B.quote(paras(node.paras)); break;
@@ -274,7 +282,7 @@
           html = B.table({ head: node.head.map(cell), rows: node.rows.map((r) => r.map(cell)) });
           break;
         }
-        case 'hr': html = B.hr(); break;
+        case 'hr': html = B.hr(contentGutter); break;
         case 'image': html = B.image({ src: esc(node.src), caption: node.caption, isGif: node.isGif }); break;
         case 'tip': case 'info':
           html = B[node.type]({ title: node.title, paras: paras(node.lines) }); break;
@@ -288,7 +296,7 @@
         case 'toc': {
           if (!meta.chapters.length) break;
           const items = meta.chapters.map((c) => ({ num: c.num, title: c.text, sub: c.tag }));
-          html = B.toc({ items });
+          html = B.toc({ items, gutter: contentGutter });
           break;
         }
         case 'cover': {
@@ -312,12 +320,13 @@
           html = B.sign({
             name: (ls[0] || signature.name).trim(),
             bio: (ls[1] === undefined ? signature.bio : ls[1]).trim().replace(/。$/, ''),
+            gutter: contentGutter,
           });
           break;
         }
       }
       if (!html) continue;
-      out.push(FLOW_TYPES.includes(node.type) ? theme.wrapFlow(html) : html);
+      out.push(FLOW_TYPES.includes(node.type) ? theme.wrapFlow(html, contentGutter) : html);
     }
     return applyBodyFontSize(theme.container(out.join('\n')), bodyFontSize);
   };
@@ -455,26 +464,54 @@
   // ---------- 编辑历史（Ctrl/Cmd+Z 撤销，Shift+Z 或 Ctrl+Y 重做） ----------
   // textarea 的原生撤销会被程序化赋值打断，这里自建快照栈：
   // 输入停顿 400ms 落一次快照；工具条插入/AI 排版/标点修复等程序化改动即时落盘
-  const history = { stack: [{ v: '', s: 0 }], idx: 0 };
+  const history = { stack: [], idx: 0 };
   let typeTimer = null;
+  let restoringHistory = false;
+  let historyRestoreToken = 0;
+  const captureHistoryState = () => ({
+    v: input.value,
+    start: input.selectionStart,
+    end: input.selectionEnd,
+    direction: input.selectionDirection || 'none',
+    scrollTop: input.scrollTop,
+  });
   const commitHistory = () => {
     clearTimeout(typeTimer);
-    const v = input.value;
-    if (history.stack[history.idx] && history.stack[history.idx].v === v) return;
+    const snap = captureHistoryState();
+    const current = history.stack[history.idx];
+    if (current && current.v === snap.v) {
+      // 文本未变时仍更新光标、选区和视口，确保往返历史时回到真实编辑位置。
+      history.stack[history.idx] = snap;
+      return;
+    }
     history.stack.length = history.idx + 1; // 丢弃重做分支
-    history.stack.push({ v, s: input.selectionStart });
+    history.stack.push(snap);
     if (history.stack.length > 100) history.stack.shift();
     history.idx = history.stack.length - 1;
   };
   const applyHistory = () => {
     const snap = history.stack[history.idx];
+    if (!snap) return;
+    restoringHistory = true;
+    const restoreToken = ++historyRestoreToken;
     input.value = snap.v;
-    input.focus();
-    input.setSelectionRange(snap.s, snap.s);
+    const start = Math.min(snap.start ?? snap.s ?? 0, input.value.length);
+    const end = Math.min(snap.end ?? start, input.value.length);
+    input.setSelectionRange(start, end, snap.direction || 'none');
+    input.focus({ preventScroll: true });
     update();
+    const targetScrollTop = Number.isFinite(snap.scrollTop) ? snap.scrollTop : input.scrollTop;
+    input.scrollTop = targetScrollTop;
+    requestAnimationFrame(() => {
+      if (restoreToken !== historyRestoreToken) return;
+      // focus、选区恢复及渲染都可能影响 textarea 视口，下一帧再锁定一次最终位置。
+      input.scrollTop = targetScrollTop;
+      restoringHistory = false;
+      syncScroll(input, previewScroller());
+    });
   };
   const undoEdit = () => { commitHistory(); if (history.idx > 0) { history.idx--; applyHistory(); } };
-  const redoEdit = () => { if (history.idx < history.stack.length - 1) { history.idx++; applyHistory(); } };
+  const redoEdit = () => { commitHistory(); if (history.idx < history.stack.length - 1) { history.idx++; applyHistory(); } };
 
   // ---------- 主题切换 ----------
   const themeBar = $('theme-bar');
@@ -1057,6 +1094,8 @@ ${defaultSignature.bio ? defaultSignature.bio + '\n' : ''}:::`;
     localStorage.setItem(FILE_KEY, filenameInput.value);
   });
 
+  $('btn-undo').addEventListener('mousedown', (event) => event.preventDefault());
+  $('btn-redo').addEventListener('mousedown', (event) => event.preventDefault());
   $('btn-undo').addEventListener('click', undoEdit);
   $('btn-redo').addEventListener('click', redoEdit);
   document.querySelectorAll('[data-format]').forEach((button) => {
@@ -1154,7 +1193,7 @@ ${defaultSignature.bio ? defaultSignature.bio + '\n' : ''}:::`;
   let syncingScroll = false;
   const previewScroller = () => $('preview-stage').classList.contains('desktop-preview') ? $('preview-stage') : phoneScreen;
   const syncScroll = (source, target) => {
-    if (syncingScroll || !source || !target) return;
+    if (syncingScroll || restoringHistory || !source || !target) return;
     const sourceRange = source.scrollHeight - source.clientHeight;
     const targetRange = target.scrollHeight - target.clientHeight;
     if (sourceRange <= 0 || targetRange <= 0) return;
@@ -1330,7 +1369,9 @@ ${defaultSignature.bio ? defaultSignature.bio + '\n' : ''}:::`;
   setWorkspaceView(localStorage.getItem(VIEW_KEY) || 'both');
   if (localStorage.getItem('mopai-preview-device') === 'article') $('view-article').click();
   update();
-  history.stack = [{ v: input.value, s: input.value.length }];
+  input.setSelectionRange(0, 0);
+  input.scrollTop = 0;
+  history.stack = [captureHistoryState()];
   history.idx = 0;
   initAi();
 })();

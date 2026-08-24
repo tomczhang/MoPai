@@ -132,10 +132,10 @@ ${line}
       },
 
       blocks: {
-        chapter({ num, tag, title, isLast, first }) {
+        chapter({ num, tag, title, isLast, first, gutter = 20 }) {
           const mt = first ? '16px' : '48px';
           const partWord = isLast ? 'LAST' : 'PART';
-          return `<section style="margin-top:${mt};margin-bottom:24px;padding:0 20px;">
+          return `<section style="margin-top:${mt};margin-bottom:24px;padding:0 ${gutter}px;">
 <section style="display:flex;align-items:center;gap:16px;">
 <section style="text-align:center;flex-shrink:0;">
 <p style="margin:0;font-size:28px;font-weight:900;color:${P.main};line-height:1;letter-spacing:-2px;">${leaf(num)}</p>
@@ -199,8 +199,8 @@ ${inner}
           }).join('');
           return `<section style="margin-bottom:24px;overflow-x:scroll;-webkit-overflow-scrolling:touch;"><table style="width:100%;${minW}border-collapse:collapse;font-size:13px;"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table></section>`;
         },
-        hr() {
-          return `<section style="margin:32px 20px;height:1px;background:linear-gradient(to right,${rgba(P.main, 0.25)},transparent);overflow:hidden;">${FILL}</section>`;
+        hr(gutter = 20) {
+          return `<section style="margin:32px ${gutter}px;height:1px;background:linear-gradient(to right,${rgba(P.main, 0.25)},transparent);overflow:hidden;">${FILL}</section>`;
         },
         image({ src, caption, isGif }) {
           const img = `<section style="background:#FFFFFF;border-radius:12px;padding:6px;border:1px solid ${N.border};box-shadow:0 4px 12px -2px rgba(0,0,0,0.08);margin-bottom:8px;">
@@ -238,7 +238,7 @@ ${paras.map((h) => `<p style="font-size:13px;color:${N.body};margin:0;line-heigh
         timeline({ items }) {
           return timelineBlock(items, P.main);
         },
-        toc({ items }) {
+        toc({ items, gutter = 20 }) {
           const cards = items.map((it, i) => {
             const first = i === 0;
             const bg = first
@@ -253,7 +253,7 @@ ${paras.map((h) => `<p style="font-size:13px;color:${N.body};margin:0;line-heigh
 ${it.sub ? `<p style="font-size:10px;color:${subColor};margin:0;">${leaf(it.sub)}</p>` : ''}
 </section>`;
           }).join('');
-          return `<section style="margin:0 20px 32px;">
+          return `<section style="margin:0 ${gutter}px 32px;">
 <section style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
 <p style="font-size:10px;color:${N.aux};margin:0;text-transform:uppercase;letter-spacing:2px;font-weight:600;">${leaf('📦 ' + items.length + ' Parts')}</p>
 <p style="font-size:10px;color:${N.aux};margin:0;">${leaf('👉 滑动')}</p>
@@ -286,9 +286,9 @@ ${(f.tags || []).map((t) => `<span style="background:rgba(255,255,255,0.2);paddi
 </section>` : ''}
 </section>`;
         },
-        sign({ name, bio }) {
+        sign({ name, bio, gutter = 20 }) {
           const introEnd = bio ? leaf('，' + bio + '。') : leaf('。');
-          const intro = `<section style="padding:0 20px;"><p style="margin-bottom:16px;font-size:14px;line-height:1.9;text-align:justify;color:${N.body};">${leaf('我是 ')}<strong style="color:${P.main};">${leaf(name)}</strong>${introEnd}</p></section>`;
+          const intro = `<section style="padding:0 ${gutter}px;"><p style="margin-bottom:16px;font-size:14px;line-height:1.9;text-align:justify;color:${N.body};">${leaf('我是 ')}<strong style="color:${P.main};">${leaf(name)}</strong>${introEnd}</p></section>`;
           return intro + `<section style="background:radial-gradient(circle at center,${N.palest} 0%,#FFFFFF 100%);border:1px solid ${N.border};border-radius:16px;padding:32px 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.03);margin:0 0 24px;">
 <p style="font-size:13px;font-weight:bold;color:${N.heading};margin-bottom:20px;line-height:1.6;">${leaf('既然看到这里了，如果觉得有用，随手点个赞、转发、推荐三连吧。')}</p>
 <section style="display:flex;justify-content:center;gap:24px;margin-bottom:16px;">
@@ -312,7 +312,7 @@ ${(f.tags || []).map((t) => `<span style="background:rgba(255,255,255,0.2);paddi
     };
 
     // 正文流式块统一包 0 20px 边距容器（杂志骨架特征）
-    theme.wrapFlow = (html) => `<section style="padding:0 20px;">${html}</section>`;
+    theme.wrapFlow = (html, gutter = 20) => `<section style="padding:0 ${gutter}px;">${html}</section>`;
     return theme;
   }
 
