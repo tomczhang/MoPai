@@ -480,10 +480,15 @@
   const themeBar = $('theme-bar');
   const renderThemeBar = () => {
     themeBar.innerHTML = '';
+    const activeTheme = themes[currentTheme];
+    $('theme-current').textContent = activeTheme.name;
+    $('theme-current-dot').style.background = activeTheme.uiColor;
     order.forEach((id) => {
       const th = themes[id];
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.className = 'theme-chip' + (id === currentTheme ? ' active' : '');
+      btn.setAttribute('aria-pressed', String(id === currentTheme));
       btn.innerHTML = `<span class="dot" style="background:${th.uiColor}"></span>${th.name}`;
       btn.addEventListener('click', () => {
         currentTheme = id;
@@ -491,6 +496,7 @@
         renderThemeBar();
         buildToolbar(); // 行内按钮样式跟随主题重绘
         update();
+        closeDetails('theme-menu');
       });
       themeBar.appendChild(btn);
     });
@@ -631,7 +637,9 @@
     const theme = themes[currentTheme];
     INLINE_TOOLS.forEach(([key, label, tip, b, a]) => {
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.className = 'tool';
+      btn.setAttribute('aria-label', label);
       // 按钮文字直接穿上当前主题的真实样式；链接避免在 button 内嵌交互式 <a>
       btn.innerHTML = key === 'link'
         ? `<span style="color:${theme.uiColor};text-decoration:underline;text-underline-offset:3px;">${label}</span>`
@@ -651,7 +659,9 @@
     BLOCK_TOOLS.forEach(([glyph, label, tpl, tip]) => {
       const getTemplate = () => (typeof tpl === 'function' ? tpl() : tpl);
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.className = 'tool';
+      btn.setAttribute('aria-label', `插入${label}`);
       btn.innerHTML = `<span class="glyph">${glyph}</span>${label}`;
       btn.title = label === '表格' ? '鼠标框选表格行列' : label === '图片' ? '插入线上或本地图片' : label === '签名' ? '维护默认签名并插入文章' : (tip || getTemplate().split('\n')[0]);
       btn.addEventListener('mousedown', (e) => e.preventDefault());
