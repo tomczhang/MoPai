@@ -132,7 +132,7 @@ ${line}
       },
 
       blocks: {
-        chapter({ num, tag, title, isLast, first, gutter = 20 }) {
+        chapter({ num, tag, title, isLast, first, gutter = 0 }) {
           const mt = first ? '16px' : '48px';
           const partWord = isLast ? 'LAST' : 'PART';
           return `<section style="margin-top:${mt};margin-bottom:24px;padding:0 ${gutter}px;">
@@ -199,7 +199,7 @@ ${inner}
           }).join('');
           return `<section style="margin-bottom:24px;overflow-x:scroll;-webkit-overflow-scrolling:touch;"><table style="width:100%;${minW}border-collapse:collapse;font-size:13px;"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table></section>`;
         },
-        hr(gutter = 20) {
+        hr(gutter = 0) {
           return `<section style="margin:32px ${gutter}px;height:1px;background:linear-gradient(to right,${rgba(P.main, 0.25)},transparent);overflow:hidden;">${FILL}</section>`;
         },
         image({ src, caption, isGif }) {
@@ -238,7 +238,7 @@ ${paras.map((h) => `<p style="font-size:13px;color:${N.body};margin:0;line-heigh
         timeline({ items }) {
           return timelineBlock(items, P.main);
         },
-        toc({ items, gutter = 20 }) {
+        toc({ items, gutter = 0 }) {
           const cards = items.map((it, i) => {
             const first = i === 0;
             const bg = first
@@ -286,7 +286,7 @@ ${(f.tags || []).map((t) => `<span style="background:rgba(255,255,255,0.2);paddi
 </section>` : ''}
 </section>`;
         },
-        sign({ name, bio, gutter = 20 }) {
+        sign({ name, bio, gutter = 0 }) {
           const introEnd = bio ? leaf('，' + bio + '。') : leaf('。');
           const intro = `<section style="padding:0 ${gutter}px;"><p style="margin-bottom:16px;font-size:14px;line-height:1.9;text-align:justify;color:${N.body};">${leaf('我是 ')}<strong style="color:${P.main};">${leaf(name)}</strong>${introEnd}</p></section>`;
           return intro + `<section style="background:radial-gradient(circle at center,${N.palest} 0%,#FFFFFF 100%);border:1px solid ${N.border};border-radius:16px;padding:32px 20px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.03);margin:0 0 24px;">
@@ -311,8 +311,8 @@ ${(f.tags || []).map((t) => `<span style="background:rgba(255,255,255,0.2);paddi
       },
     };
 
-    // 正文流式块统一包 0 20px 边距容器（杂志骨架特征）
-    theme.wrapFlow = (html, gutter = 20) => `<section style="padding:0 ${gutter}px;">${html}</section>`;
+    // 公众号页面已提供外层留白；正文流式块不再重复叠加横向内边距。
+    theme.wrapFlow = (html, gutter = 0) => `<section style="padding:0 ${gutter}px;">${html}</section>`;
     return theme;
   }
 

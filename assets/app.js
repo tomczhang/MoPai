@@ -8,7 +8,7 @@
  *   行内：**加粗** *斜体* ==高亮== ++下划线++ ~~删除线~~ %%马克笔%% [[胶囊]] `code` [文](url)
  *   块级：# ## ### > !!金句 - 1. ``` 表格 --- ![](url) [TOC]
  *         :::tip/info 标题 … :::
- *         :::steps（行=标题|描述）  :::cols（行=标题|描述）
+ *         :::toc（行=标题|标签）  :::steps（行=标题|描述）  :::cols（行=标题|描述）
  *         :::timeline（行=标签|标题|内容）  :::center  :::cover（键: 值） :::sign
  */
 (() => {
@@ -72,7 +72,7 @@
   // 块级解析 → AST
   // ============================================================
 
-  const CONTAINER_KINDS = ['tip', 'info', 'steps', 'cols', 'timeline', 'center', 'cover', 'sign'];
+  const CONTAINER_KINDS = ['tip', 'info', 'toc', 'steps', 'cols', 'timeline', 'center', 'cover', 'sign'];
 
   const parse = (raw) => {
     const lines = raw.replace(/\r\n/g, '\n').split('\n');
@@ -236,7 +236,7 @@
   const FLOW_TYPES = ['sub', 'p', 'quote', 'golden', 'center', 'ul', 'ol', 'fence', 'table', 'image',
     'tip', 'info', 'steps', 'cols', 'timeline'];
   const BODY_FONT_BASE = 14;
-  const BODY_FONT_DEFAULT = 15;
+  const BODY_FONT_DEFAULT = 16;
   const BODY_FONT_MIN = 12;
   const BODY_FONT_MAX = 20;
   const SIGNATURE_DEFAULT = {
@@ -248,17 +248,11 @@
   const applyBodyFontSize = (html, size) =>
     size === BODY_FONT_BASE ? html : html.replace(/font-size:14px/g, `font-size:${size}px`);
 
-  const contentGutterForFont = (size) => {
-    if (size <= 14) return 20;
-    if (size <= 16) return 16;
-    if (size <= 18) return 14;
-    return 12;
-  };
-
   const renderWeChat = (parsed, theme, bodyFontSize = BODY_FONT_DEFAULT, signature = SIGNATURE_DEFAULT) => {
     const { ast, meta } = parsed;
     const B = theme.blocks;
-    const contentGutter = contentGutterForFont(bodyFontSize);
+    // 公众号阅读页本身已有页面留白，正文区块不再叠加横向内边距。
+    const contentGutter = 0;
     const inl = (t) => inlineWx(t, theme);
     const paras = (arr) => arr.map(inl);
     const out = [];
@@ -294,8 +288,13 @@
           break;
         }
         case 'toc': {
-          if (!meta.chapters.length) break;
-          const items = meta.chapters.map((c) => ({ num: c.num, title: c.text, sub: c.tag }));
+          const items = node.lines
+            ? node.lines.map((line, index) => {
+              const [title, tag = ''] = line.split('|').map((part) => part.trim());
+              return { num: String(index + 1).padStart(2, '0'), title: esc(title), sub: esc(tag) };
+            }).filter((item) => item.title)
+            : meta.chapters.map((c) => ({ num: c.num, title: c.text, sub: c.tag }));
+          if (!items.length) break;
           html = B.toc({ items, gutter: contentGutter });
           break;
         }
@@ -592,6 +591,8 @@
     ['em', '斜体', '行内斜体（语气或术语强调）', '*', '*'],
   ];
 
+  const EDITABLE_TOC_TEMPLATE = ':::toc\n先说结论|OPINION\n实测过程|TEST\n写在最后|FINAL\n:::';
+
   // 按用户指定顺序排列；[单色图示, 按钮文字, 插入模板, 可选提示]
   const BLOCK_TOOLS = [
     ['•', '无序列表', '- 普通列表第一项\n- [[带胶囊的列表项]]'],
@@ -612,7 +613,7 @@
     ['⋮', '时间线', ':::timeline\nCASE 01|标题一|内容一\nCASE 02|标题二|内容二\n:::'],
     ['H1', '文章标题', '# 文章标题', '仅同步到手机预览栏，不进入复制正文'],
     ['⬒', '封面', ':::cover\n标签：FEATURE\n旧认知：被颠覆的旧观念\n标题：主标题前半\n高亮词：强调词\n标题2：第二行（可删）\n副标题：关键词 · 用点分隔\n品牌：墨排编辑器\n:::'],
-    ['☰', '目录', '[TOC]'],
+    ['☰', '目录', EDITABLE_TOC_TEMPLATE, '每行填写“目录文字|英文标签”，可直接修改'],
     ['✎', '签名', () => `:::sign\n${defaultSignature.name}\n${defaultSignature.bio ? defaultSignature.bio + '\n' : ''}:::`],
   ];
 
@@ -630,7 +631,7 @@
   // 个别块组件的插入模板不能直接独立渲染，用专门的预览源码
   const BLOCK_PREVIEW = {
     '文章标题': { md: '# 示例文章标题\n\n文章标题仅同步到手机预览栏，不进入复制正文。' },
-    '目录': { md: '[TOC]\n\n## 先说结论 | OPINION\n\n## 实测过程 | TEST\n\n## 写在最后 | FINAL', pickFirst: true },
+    '目录': { md: EDITABLE_TOC_TEMPLATE },
     '图片': { md: `![示例图片说明](${PREVIEW_IMG})` },
   };
 
